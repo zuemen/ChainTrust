@@ -37,9 +37,14 @@ async function main() {
   const chain = await buildChain();
   const issuer = await createIssuerDid(agent);
   const issuerAddr = issuerAddressFromIdentifier(issuer);
-  // 記憶體模式下自動背書示範 issuer
+  // 第二發證者：中華電信門號電子卡（雙簽發者＝多機構信任網路最小示範）
+  const issuerCht = await createIssuerDid(agent, "issuer-cht-mobile");
+  const issuerChtAddr = issuerAddressFromIdentifier(issuerCht);
+  // 記憶體模式下自動背書兩個示範 issuer；
+  // ethers 模式請依 docs/amoy-deploy-checklist.md 於鏈上 IssuerRegistry 背書兩個位址。
   if (config.chainMode === "memory") {
     await chain.setTrustedIssuer(issuerAddr, true);
+    await chain.setTrustedIssuer(issuerChtAddr, true);
   }
 
   const app = express();
@@ -69,15 +74,23 @@ async function main() {
   };
 
   app.get("/health", (_req, res) => {
-    res.json({ ok: true, chainMode: config.chainMode, issuerDid: issuer.did, issuerAddr });
+    res.json({
+      ok: true,
+      chainMode: config.chainMode,
+      issuerDid: issuer.did,
+      issuerAddr,
+      chtIssuerDid: issuerCht.did,
+      chtIssuerAddr: issuerChtAddr,
+    });
   });
 
   // ── SD-JWT（M2.0/M2.2 錢包用）──
-  // 簽發 SD-JWT KYCCredential 給 holder（缺 holderDid 則自動建一個）
+  // 簽發 SD-JWT KYCCredential。holderDid 必填且由錢包在瀏覽器端推導（金鑰自主）；
+  // 伺服器不再代建持有者 DID。
   app.post("/sdjwt/issue", requireApiKey, async (req, res) => {
     try {
-      let { holderDid, subject } = req.body ?? {};
-      if (!holderDid) holderDid = (await createHolderDid(agent, `holder-${Date.now()}`)).did;
+      const { holderDid, subject } = req.body ?? {};
+      if (!holderDid) return res.status(400).json({ error: "缺 holderDid（請由錢包本機金鑰推導）" });
       const vc = await issueKycSdJwt({ issuer, holderDid, subject }, agent);
       res.json({ vc, holderDid, issuerDid: issuer.did });
     } catch (e: any) {
@@ -94,7 +107,8 @@ async function main() {
     res.json({ nonce, aud: VERIFIER_AUD });
   });
 
-  // 階段 B：持有者端出示（PoC：holder 金鑰在 server agent），帶 key binding
+  // 【LEGACY，僅供 e2e 腳本】伺服器代簽 KB 的出示。
+  // 錢包已改為瀏覽器端本機金鑰簽 KB（packages/wallet/src/keys.ts），此端點不再被前端使用。
   app.post("/sdjwt/present", async (req, res) => {
     try {
       const { vc, holderDid, revealKeys, aud, nonce } = req.body ?? {};
@@ -168,7 +182,7 @@ async function main() {
       const { holderDid, msisdn } = req.body ?? {};
       if (!holderDid || !msisdn) return res.status(400).json({ error: "缺 holderDid 或 msisdn" });
       const vc = await issueMobileRealNameCredential(agent, {
-        issuerDid: issuer.did,
+        issuerDid: issuerCht.did, // 第二發證者：中華電信門號電子卡
         holderDid,
         msisdn,
       });

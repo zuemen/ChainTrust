@@ -14,7 +14,11 @@ services:
       context: .
       dockerfile: packages/issuer-verifier/Dockerfile
     environment:
-      CHAIN_MODE: memory
+      # 預設 memory；上真鏈時：CHAIN_MODE=ethers docker compose up
+      # （需先完成 Amoy 部署，見 docs/amoy-deploy-checklist.md）
+      CHAIN_MODE: ${CHAIN_MODE:-memory}
+      AMOY_RPC_URL: ${AMOY_RPC_URL:-https://rpc-amoy.polygon.technology}
+      CHAIN_PRIVATE_KEY: ${CHAIN_PRIVATE_KEY:-}
       AI_SERVICE_URL: http://ai-service:8000
       PORT: "3001"
     ports:

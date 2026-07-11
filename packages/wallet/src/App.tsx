@@ -1,16 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   issueKyc,
+  issueMobile,
+  getNonce,
   verifyPresentation,
   health,
   getMetrics,
   type TxContext,
   type VerifyResponse,
   type ModelMetrics,
+  type MobileVc,
 } from "./api.ts";
-import { parseSdJwt, buildPresentation, type ParsedSdJwt } from "./sdjwt.ts";
+import { parseSdJwt, buildPresentationWithKeyBinding, type ParsedSdJwt } from "./sdjwt.ts";
+import { ensureHolderKeys } from "./keys.ts";
 
 const VC_KEY = "chaintrust.vc";
+const MOBILE_VC_KEY = "chaintrust.mobileVc";
 
 // claim 中文標籤與是否屬敏感個資
 const CLAIM_LABELS: Record<string, { label: string; pii: boolean }> = {
@@ -72,6 +77,9 @@ export function App() {
   const [online, setOnline] = useState<boolean | null>(null);
   const [vc, setVc] = useState<string | null>(() => localStorage.getItem(VC_KEY));
   const [holderDid, setHolderDid] = useState<string>(() => localStorage.getItem("chaintrust.holder") ?? "");
+  const [mobileVc, setMobileVc] = useState<MobileVc | null>(() => {
+    try { return JSON.parse(localStorage.getItem(MOBILE_VC_KEY) ?? "null"); } catch { return null; }
+  });
   const [scenario, setScenario] = useState<keyof typeof SCENARIOS>("normal");
   const [reveal, setReveal] = useState<Set<string>>(new Set([REQUIRED_CLAIM]));
   const [stage, setStage] = useState<Stage>("wallet");
@@ -88,22 +96,48 @@ export function App() {
   useEffect(() => {
     health().then((h) => { setOnline(h.ok); setIssuerDid(h.issuerDid); }).catch(() => setOnline(false));
     getMetrics().then((m) => { if (m.available && m.metrics) setMetrics(m.metrics); }).catch(() => {});
+    // 金鑰自主遷移：舊憑證若綁定「伺服器代管 DID」（與本機金鑰推導的 DID 不符），
+    // KB 簽章必然失敗——直接清除並提示重新申請。
+    const localDid = ensureHolderKeys().did;
+    const storedDid = localStorage.getItem("chaintrust.holder");
+    if (storedDid && storedDid !== localDid && localStorage.getItem(VC_KEY)) {
+      localStorage.removeItem(VC_KEY);
+      localStorage.removeItem(MOBILE_VC_KEY);
+      localStorage.setItem("chaintrust.holder", localDid);
+      setVc(null); setMobileVc(null); setHolderDid(localDid);
+      setError("錢包已升級為本機金鑰（金鑰自主），舊憑證已失效，請重新申請。");
+    }
   }, []);
 
   async function handleIssue() {
     setBusy(true); setError("");
     try {
-      const r = await issueKyc();
+      // 金鑰自主：金鑰對在瀏覽器生成，DID 由本機公鑰推導，私鑰永不離開此裝置。
+      const keys = ensureHolderKeys();
+      const r = await issueKyc(keys.did);
       localStorage.setItem(VC_KEY, r.vc);
-      localStorage.setItem("chaintrust.holder", r.holderDid);
-      setVc(r.vc); setHolderDid(r.holderDid);
+      localStorage.setItem("chaintrust.holder", keys.did);
+      setVc(r.vc); setHolderDid(keys.did);
+    } catch (e: any) { setError(e?.message ?? String(e)); }
+    finally { setBusy(false); }
+  }
+
+  async function handleIssueMobile() {
+    setBusy(true); setError("");
+    try {
+      const keys = ensureHolderKeys();
+      const r = await issueMobile(keys.did, "0912345678");
+      localStorage.setItem(MOBILE_VC_KEY, JSON.stringify(r.vc));
+      setMobileVc(r.vc);
+      if (!holderDid) { localStorage.setItem("chaintrust.holder", keys.did); setHolderDid(keys.did); }
     } catch (e: any) { setError(e?.message ?? String(e)); }
     finally { setBusy(false); }
   }
 
   function handleForget() {
     localStorage.removeItem(VC_KEY);
-    setVc(null); setResult(null); setStage("wallet");
+    localStorage.removeItem(MOBILE_VC_KEY);
+    setVc(null); setMobileVc(null); setResult(null); setStage("wallet");
   }
 
   function toggleReveal(claim: string) {
@@ -119,8 +153,15 @@ export function App() {
     if (!parsed) return;
     setBusy(true); setError("");
     try {
-      const presentation = buildPresentation(parsed, [...reveal]);
-      const res = await verifyPresentation(presentation, SCENARIOS[scenario].tx);
+      // 1) 向驗證方取一次性 nonce（防重放）
+      const { nonce, aud } = await getNonce();
+      // 2) 全程瀏覽器端：最小揭露 + 本機私鑰簽 KB-JWT（防出示被轉手）
+      const presentation = buildPresentationWithKeyBinding(parsed, [...reveal], { aud, nonce });
+      // 3) 驗證方要求 KB 必驗 + nonce 一次性
+      const res = await verifyPresentation(presentation, SCENARIOS[scenario].tx, {
+        requireKeyBinding: true,
+        expectedNonce: nonce,
+      });
       setResult(res); setStage("result");
     } catch (e: any) { setError(e?.message ?? String(e)); }
     finally { setBusy(false); }
@@ -172,6 +213,30 @@ export function App() {
               ))}
             </div>
             <button className="btn ghost" onClick={handleForget}>刪除憑證</button>
+          </div>
+        )}
+      </section>
+
+      {/* 第二發證者：中華電信門號電子卡（多機構信任網路） */}
+      <section className="card">
+        <div className="card-h"><h2>門號實名憑證</h2><span className="tag">發證：中華電信（門號電子卡）</span></div>
+        {!mobileVc ? (
+          <div className="empty">
+            <p>由<b>第二個發證機構</b>簽發：中華電信以門號電子卡驗證實名後發出憑證，
+              與銀行 A <b>同受一個信任根背書</b>——多機構信任網路的最小示範。</p>
+            <button className="btn primary" disabled={busy || !online} onClick={handleIssueMobile}>
+              {busy ? "申請中…" : "申請門號實名憑證（0912-***-678）"}
+            </button>
+          </div>
+        ) : (
+          <div>
+            <div className="cred">
+              <div className="cred-row"><span>類型</span><b>MobileRealNameCredential</b></div>
+              <div className="cred-row"><span>電信商</span><b>{mobileVc.credentialSubject.carrier}</b></div>
+              <div className="cred-row"><span>門號</span><b>{mobileVc.credentialSubject.msisdnMasked}</b></div>
+              <div className="cred-row"><span>實名驗證</span><b>{mobileVc.credentialSubject.msisdnVerified ? "✓ 已通過" : "✗ 未通過"}</b></div>
+            </div>
+            <p className="hint">🏛 與 KYC 憑證來自不同發證者，但由同一個鏈上信任根（IssuerRegistry）背書。</p>
           </div>
         )}
       </section>
@@ -235,6 +300,9 @@ export function App() {
             <Check ok={result.verify.checks.trustedIssuer} label="發證者受信任根背書" />
             <Check ok={result.verify.checks.notRevoked} label="憑證未被撤銷" />
             <Check ok={result.verify.checks.predicate} label="KYC 等級 ≥ 2" />
+            {result.verify.checks.keyBinding !== undefined && (
+              <Check ok={result.verify.checks.keyBinding} label="持有者金鑰綁定（KB，本機簽章）" />
+            )}
           </div>
 
           <div className="seen">
@@ -287,7 +355,7 @@ export function App() {
 
       {metrics && <ModelTrust m={metrics} />}
 
-      <footer>PoC · 僅測試網 · CHT 整合點為 mock｜<code>{shortDid(issuerDid)}</code></footer>
+      <footer>PoC · 僅測試網 · CHT 整合點為 mock · 持有者金鑰在本機（金鑰自主）｜<code>{shortDid(issuerDid)}</code></footer>
     </div>
   );
 }

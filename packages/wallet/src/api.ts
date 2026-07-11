@@ -64,7 +64,7 @@ export interface MetricsResponse {
 
 export interface SdJwtVerifyResult {
   ok: boolean;
-  checks: { signature: boolean; trustedIssuer: boolean; notRevoked: boolean; predicate: boolean };
+  checks: { signature: boolean; trustedIssuer: boolean; notRevoked: boolean; predicate: boolean; keyBinding?: boolean };
   disclosed: string[];
   withheld: string[];
   payload?: Record<string, unknown>;
@@ -94,19 +94,48 @@ export async function health(): Promise<{ ok: boolean; issuerDid: string }> {
   return res.json();
 }
 
-export async function issueKyc(subject?: Record<string, unknown>): Promise<{
-  vc: string;
-  holderDid: string;
-  issuerDid: string;
-}> {
-  return postJson("/sdjwt/issue", { subject });
+export async function issueKyc(
+  holderDid: string,
+  subject?: Record<string, unknown>
+): Promise<{ vc: string; holderDid: string; issuerDid: string }> {
+  // holderDid 由瀏覽器端金鑰推導（keys.ts）——伺服器不再代管持有者金鑰
+  return postJson("/sdjwt/issue", { holderDid, subject });
+}
+
+/** 向驗證方取一次性 nonce（防重放）；aud 為驗證方識別。 */
+export async function getNonce(): Promise<{ nonce: string; aud: string }> {
+  return postJson("/sdjwt/nonce", {});
+}
+
+/** 第二發證者：中華電信門號電子卡（W3C JWT VC，mock adapter） */
+export interface MobileVc {
+  credentialSubject: {
+    id: string;
+    msisdnVerified: boolean;
+    carrier: string;
+    realName: string;
+    msisdnMasked: string;
+  };
+  issuer: { id: string } | string;
+}
+export async function issueMobile(
+  holderDid: string,
+  msisdn: string
+): Promise<{ vc: MobileVc; revocationKey: string }> {
+  return postJson("/issue/mobile", { holderDid, msisdn });
 }
 
 export async function verifyPresentation(
   presentation: string,
-  tx: TxContext
+  tx: TxContext,
+  opts?: { requireKeyBinding?: boolean; expectedNonce?: string }
 ): Promise<VerifyResponse> {
-  return postJson("/sdjwt/verify", { presentation, tx });
+  return postJson("/sdjwt/verify", {
+    presentation,
+    tx,
+    requireKeyBinding: opts?.requireKeyBinding,
+    expectedNonce: opts?.expectedNonce,
+  });
 }
 
 export async function getMetrics(): Promise<MetricsResponse> {

@@ -48,3 +48,19 @@ export function buildPresentation(parsed: ParsedSdJwt, revealClaims: string[]): 
     .map((d) => d.raw);
   return [parsed.jwt, ...kept].join("~") + "~";
 }
+
+/**
+ * 帶 key binding 的出示（全程瀏覽器端）：
+ * 最小揭露 core + KB-JWT（aud/nonce/sd_hash，以本機持有者私鑰簽 ES256K）。
+ * 防止出示內容被攔截後轉手他人——他人無持有者私鑰，簽不出對應 cnf 的 KB。
+ */
+import { ensureHolderKeys, attachKeyBinding } from "./keys.ts";
+
+export function buildPresentationWithKeyBinding(
+  parsed: ParsedSdJwt,
+  revealClaims: string[],
+  kb: { aud: string; nonce: string }
+): string {
+  const core = buildPresentation(parsed, revealClaims);
+  return attachKeyBinding(ensureHolderKeys(), core, kb);
+}
