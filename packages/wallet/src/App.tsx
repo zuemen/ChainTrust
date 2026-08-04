@@ -1001,7 +1001,10 @@ function ModelTrust({ m }: { m: ModelMetrics }) {
 
       {ablation && (
         <div className="ablation">
-          <h3>中華電信身分訊號的反詐增益</h3>
+          <h3>
+            中華電信身分訊號的反詐增益
+            {ablation.evidence_grade === "simulation" && <span className="tag warn">模擬推估</span>}
+          </h3>
           <div className="ab-row">
             <span>無 CHT 訊號</span>
             <div className="ab-bar"><i style={{ width: `${ratio(ablation.without_cht_pr_auc, ablation.with_cht_pr_auc)}%` }} /></div>
@@ -1013,6 +1016,11 @@ function ModelTrust({ m }: { m: ModelMetrics }) {
             <b>{pct(ablation.with_cht_pr_auc)}</b>
           </div>
           <p className="lift">門號實名／裝置／地理／帳戶年齡等身分訊號，使反詐 PR-AUC 提升 <b>+{fixed(ablation.lift_pct, 1)}%</b>。</p>
+          {/* 誠實度：這個增益來自以標籤為條件生成的合成訊號，不是真實效度證據。
+              數字若只在 metrics.json 裡標註而不呈現在畫面上，等於沒有標註。 */}
+          {typeof ablation.caveat_zh === "string" && ablation.caveat_zh.length > 0 && (
+            <p className="caveat">⚠ {ablation.caveat_zh}</p>
+          )}
         </div>
       )}
 

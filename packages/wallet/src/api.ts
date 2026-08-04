@@ -53,6 +53,9 @@ export interface ModelMetrics {
     lift_pr_auc: number;
     lift_pct: number;
     signals: string[];
+    /** 證據等級：simulation = 由以標籤為條件生成的合成訊號推得，非真實效度 */
+    evidence_grade?: string;
+    caveat_zh?: string;
   };
 }
 

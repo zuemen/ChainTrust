@@ -205,3 +205,17 @@ code { font-family: ui-monospace, "Cascadia Code", monospace; font-size: 12px; c
 }
 
 footer { text-align: center; font-size: 11px; color: var(--muted); margin-top: 22px; }
+
+/* 模型可信度報告：證據等級標籤與誠實度警語（C4 —— 合成訊號推得的增益不可當真實效度） */
+.tag.warn { color: #ffe3b0; border-color: rgba(245,158,11,0.6); }
+.ablation h3 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ablation .caveat {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #ffe3b0;
+  background: rgba(245,158,11,0.08);
+  border-left: 3px solid rgba(245,158,11,0.6);
+  padding: 8px 10px;
+  border-radius: 6px;
+}
