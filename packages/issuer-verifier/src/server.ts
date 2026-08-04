@@ -19,6 +19,7 @@ import { randomUUID, timingSafeEqual } from "crypto";
 import { scoreTransaction, fetchMetrics } from "./fraud.js";
 import { issuerAddressFromIdentifier } from "./credentialHash.js";
 import { config } from "./config.js";
+import type { IIdentifier } from "@veramo/core";
 
 /**
  * Issuer/Verifier HTTP 服務（PoC）。
@@ -42,15 +43,11 @@ async function buildChain(): Promise<ChainGateway> {
   return new InMemoryChainGateway();
 }
 
-async function main() {
-  // fail-closed：非開發環境缺 API_KEY 直接拒絕啟動，而不是靜默放行簽發／撤銷端點。
-  if (config.nodeEnv !== "development" && !config.apiKey) {
-    console.error(
-      `[issuer-verifier] NODE_ENV=${config.nodeEnv} 但未設 API_KEY：` +
-        "簽發與撤銷端點將無保護，拒絕啟動。請設定 API_KEY 環境變數。"
-    );
-    process.exit(1);
-  }
+/**
+ * 建立 express app（不 listen）。抽出來讓 HTTP 層可被測試覆蓋：
+ * API key 守門、nonce 一次性、驗證政策強制等都在這一層，先前完全沒有自動化測試。
+ */
+export async function createApp(): Promise<{ app: express.Express; issuer: IIdentifier; chain: ChainGateway }> {
   const agent = createVeramoAgent();
   const chain = await buildChain();
   const issuer = await createIssuerDid(agent);
@@ -356,6 +353,19 @@ async function main() {
     }
   });
 
+  return { app, issuer, chain };
+}
+
+async function main() {
+  // fail-closed：非開發環境缺 API_KEY 直接拒絕啟動，而不是靜默放行簽發／撤銷端點。
+  if (config.nodeEnv !== "development" && !config.apiKey) {
+    console.error(
+      `[issuer-verifier] NODE_ENV=${config.nodeEnv} 但未設 API_KEY：` +
+        "簽發與撤銷端點將無保護，拒絕啟動。請設定 API_KEY 環境變數。"
+    );
+    process.exit(1);
+  }
+  const { app, issuer } = await createApp();
   app.listen(config.port, () => {
     console.log(`[issuer-verifier] 服務啟動 http://localhost:${config.port}`);
     console.log(`[issuer-verifier] chainMode=${config.chainMode} issuer=${issuer.did}`);
@@ -368,7 +378,10 @@ async function main() {
   });
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+// 僅在直接執行時啟動伺服器；被 import（測試）時不啟動
+if (process.env.VITEST !== "true") {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
