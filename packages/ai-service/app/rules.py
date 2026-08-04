@@ -23,6 +23,7 @@ REASON_LABELS = {
     "NEW_ACCOUNT": "新開帳戶",
     "HIGH_PAYEE_RISK": "收款方高風險",
     "CROSS_INST_REUSE": "跨機構頻繁出示",
+    "THREAT_INTEL_HIT": "CHT Security 情資命中（通報詐欺/人頭帳戶）",
     "MODEL_ANOMALY": "模型偵測到異常樣態",
 }
 
@@ -31,6 +32,7 @@ WEIGHTS = {
     "MULE_PATTERN": 45,
     "MULE_RING": 40,
     "FAN_IN_COLLECTION": 30,
+    "THREAT_INTEL_HIT": 35,
     "PASS_THROUGH": 30,
     "MODEL_ANOMALY": 30,
     "RAPID_MOVEMENT": 25,
@@ -94,6 +96,8 @@ def reason_codes(row: Mapping[str, Any]) -> list[str]:
         codes.append("HIGH_PAYEE_RISK")
     if float(row.get("cross_institution_presentations", 0) or 0) >= 8:
         codes.append("CROSS_INST_REUSE")
+    if bool(row.get("threat_intel_hit", False)):
+        codes.append("THREAT_INTEL_HIT")
     return codes
 
 

@@ -61,7 +61,7 @@ pnpm smoke
 各套件單獨啟動：
 
 ```shell
-pnpm contracts:test    # 合約測試（12）
+pnpm contracts:test    # 合約測試（16）
 pnpm iv:e2e            # 身分層 e2e（M1+M2.0）
 pnpm iv:dev            # issuer-verifier :3001
 pnpm ai:dev            # AI 反詐 :8000
@@ -84,8 +84,21 @@ pnpm test             # 跑所有 JS/TS 套件測試
 - [`docs/poc-spec.md`](docs/poc-spec.md) — PoC 技術規格（給開發者）
 - [`docs/DEMO.md`](docs/DEMO.md) — 現場 Demo 操作腳本
 - [`docs/ai-fraud-spec.md`](docs/ai-fraud-spec.md) — AI 反詐模組規格
+- [`docs/model-card.md`](docs/model-card.md) — 反詐模型 Model Card（訓練資料/限制/偏誤/治理）
 - [`docs/amoy-deploy-checklist.md`](docs/amoy-deploy-checklist.md) — Amoy 測試網部署清單
+- [`docs/completeness-roadmap.md`](docs/completeness-roadmap.md) — 完整度分析、P0/P1/P2 待辦、逐項執行日誌
 - [`CLAUDE.md`](CLAUDE.md) — 專案脈絡與開發規範（給 Claude Code）
+
+## 最近更新（2026-07-21）
+
+> 完整的完整度分析、P0/P1/P2 待辦與逐項執行日誌（含日期）見 [`docs/completeness-roadmap.md`](docs/completeness-roadmap.md) §5。
+
+- **反詐情資接進 `/score`**：新增 `ThreatIntelAdapter`/`MockThreatIntelAdapter`（`packages/issuer-verifier/src/adapters/cht.ts`），`scoreTransaction()` 依收款方識別碼查詢情資後併入請求；AI 服務新增 `THREAT_INTEL_HIT` 加權規則，規則模式與模型模式命中都會實際推動風險分數與決策。
+- **模型 Model Card + 治理文件**：新增 [`docs/model-card.md`](docs/model-card.md)——訓練資料、架構、指標、限制、**偏誤聲明**（反詐特徵可能懲罰無聯徵薄檔用戶，與普惠金融目標用戶重疊，此前未被記錄）、重訓節奏與漂移監控建議、人工審核責任分工。
+- **CHT 產品對應表補實查**：`docs/completeness-roadmap.md` §3.1 換成有來源、有日期的真實 CHT 產品調研（含 2026-07-01 甫發布的 MID+/GSMA Open Gateway 新聞稿），4 個 adapter 介面與 `ChainGateway` 加上目標產品與預期 API 形態的檔頭註記。發現 CHT 研究院已有遵循 W3C DID 標準的研發項目（與本專案架構高度一致），以及 HiPKI/ePKI 根憑證即將被 Chrome 撤銷信任的時效性風險。
+- **普惠金融線補位**：`FinancialReputationCredential` —— 電信繳費史（CHT adapter mock）→ 可攜財務信譽 VC（SD-JWT）→ 錢包「繳費信譽憑證」卡 + 「微型貸款平台」出示情境（只揭露信譽等級、無需聯徵）。
+- **真 PaySim 實測（重要發現）**：635 萬筆、詐欺率 0.13%。PaySim 餘額欄位近決定性 → 指標飽和，CHT 增益歸零、且誤放行已實名過水帳戶。**demo 模型維持合成 hard-mode 訓練**，詳見 [`docs/model-card.md`](docs/model-card.md) 與 [`docs/DEMO.md`](docs/DEMO.md) 誠實聲明。
+- 測試現況：合約 16、issuer-verifier 26、ai-service 22 全綠；e2e 含普惠步驟 [9][10] 全過。
 
 ## 狀態
 
@@ -98,6 +111,7 @@ PoC 開發中。所有「中華電信整合點」目前為 **mock**，正式落�
 - [x] **M2.1 AI 反詐** — `/score`（LightGBM+IsolationForest）+ verifier 整合
 - [x] **M2.2 錢包** — 出示最小揭露同意 + 風險攔截 UI
 - [x] **M3 串線** — `pnpm demo` / `docker compose up` 一鍵啟動 + `pnpm smoke` 跨服務驗證 + [`docs/DEMO.md`](docs/DEMO.md)
+- [x] **普惠金融** — `FinancialReputationCredential`：電信繳費史 → 可攜財務信譽（SD-JWT 最小揭露）→ 無聯徵核貸情境
 
 ## 授權
 

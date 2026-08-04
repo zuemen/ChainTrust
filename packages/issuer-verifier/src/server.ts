@@ -8,7 +8,13 @@ import {
 } from "./chain/gateway.js";
 import { issueKYCCredential, issueMobileRealNameCredential, revocationKeyOf } from "./issuer.js";
 import { verifyCredential, verifyAndScore } from "./verifier.js";
-import { issueKycSdJwt, presentKycWithKeyBinding, verifyKycSdJwtPresentation } from "./sdjwt.js";
+import {
+  issueKycSdJwt,
+  issueReputationSdJwt,
+  presentKycWithKeyBinding,
+  verifyKycSdJwtPresentation,
+  verifyReputationSdJwtPresentation,
+} from "./sdjwt.js";
 import { randomUUID } from "crypto";
 import { scoreTransaction, fetchMetrics } from "./fraud.js";
 import { issuerAddressFromIdentifier } from "./credentialHash.js";
@@ -40,11 +46,28 @@ async function main() {
   // 第二發證者：中華電信門號電子卡（雙簽發者＝多機構信任網路最小示範）
   const issuerCht = await createIssuerDid(agent, "issuer-cht-mobile");
   const issuerChtAddr = issuerAddressFromIdentifier(issuerCht);
-  // 記憶體模式下自動背書兩個示範 issuer；
-  // ethers 模式請依 docs/amoy-deploy-checklist.md 於鏈上 IssuerRegistry 背書兩個位址。
+  // 自動背書示範 issuer：金鑰僅存記憶體，重啟後 issuer 位址必變，須重新背書。
+  // memory 模式直接設；ethers 模式需 CHAIN_PRIVATE_KEY 為 IssuerRegistry owner（PoC 中即 deployer）。
   if (config.chainMode === "memory") {
     await chain.setTrustedIssuer(issuerAddr, true);
     await chain.setTrustedIssuer(issuerChtAddr, true);
+  } else if (config.chainPrivateKey) {
+    try {
+      await chain.setTrustedIssuer(issuerAddr, true);
+      await chain.setTrustedIssuer(issuerChtAddr, true);
+      console.log(`[issuer-verifier] 已於鏈上背書示範 issuer ${issuerAddr} / ${issuerChtAddr}`);
+    } catch (e) {
+      console.warn(
+        `[issuer-verifier] 鏈上背書示範 issuer 失敗（CHAIN_PRIVATE_KEY 非 IssuerRegistry owner？）。` +
+          `驗證將因 trustedIssuer=false 失敗，可改用 smoke:amoy 的 TRUST_ISSUER=${issuerAddr} 手動背書。`,
+        e
+      );
+    }
+  } else {
+    console.warn(
+      `[issuer-verifier] CHAIN_MODE=ethers 且未設 CHAIN_PRIVATE_KEY（唯讀）：` +
+        `示範 issuer ${issuerAddr} 未受鏈上信任，簽發後驗證會失敗；撤銷端點亦不可用。`
+    );
   }
 
   const app = express();
@@ -98,6 +121,18 @@ async function main() {
     }
   });
 
+  // 普惠金融：以電信繳費紀錄簽發 FinancialReputationCredential（SD-JWT）
+  app.post("/sdjwt/issue-reputation", requireApiKey, async (req, res) => {
+    try {
+      let { holderDid, msisdn } = req.body ?? {};
+      if (!holderDid) holderDid = (await createHolderDid(agent, `holder-${Date.now()}`)).did;
+      const vc = await issueReputationSdJwt({ issuer, holderDid, msisdn }, agent);
+      res.json({ vc, holderDid, issuerDid: issuer.did });
+    } catch (e: any) {
+      serverError(res, e);
+    }
+  });
+
   // 階段 B：驗證方核發一次性 nonce（防重放）。aud = 本驗證方識別。
   const VERIFIER_AUD = config.verifierAud;
   const issuedNonces = new Set<string>();
@@ -130,7 +165,7 @@ async function main() {
   // 驗證 SD-JWT 出示（含 key binding）+ AI 風險評分 → 綜合 outcome
   app.post("/sdjwt/verify", async (req, res) => {
     try {
-      const { presentation, tx, requireKeyBinding, expectedNonce } = req.body ?? {};
+      const { presentation, tx, kind, requireKeyBinding, expectedNonce } = req.body ?? {};
       if (!presentation) return res.status(400).json({ error: "缺 presentation" });
       // 若帶 expectedNonce，驗其為本方核發且未用過（一次性）
       if (expectedNonce != null && !issuedNonces.has(expectedNonce)) {
@@ -139,12 +174,16 @@ async function main() {
           outcome: "reject",
         });
       }
-      const verify = await verifyKycSdJwtPresentation(chain, presentation, {
-        minKycLevel: 2,
+      const kbOpts = {
         requireKeyBinding: requireKeyBinding === true,
         expectedAud: requireKeyBinding === true ? VERIFIER_AUD : undefined,
         expectedNonce: expectedNonce ?? undefined,
-      });
+      };
+      // kind=reputation → 普惠信譽述詞（reputationTier>=2）；預設 KYC 述詞（kycLevel>=2）
+      const verify =
+        kind === "reputation"
+          ? await verifyReputationSdJwtPresentation(chain, presentation, { minTier: 2, ...kbOpts })
+          : await verifyKycSdJwtPresentation(chain, presentation, { minKycLevel: 2, ...kbOpts });
       if (verify.ok && expectedNonce != null) issuedNonces.delete(expectedNonce); // 消耗 nonce
       let risk;
       let outcome: "approve" | "review" | "reject" = "reject";

@@ -16,7 +16,14 @@ import {
 } from "./chain/gateway.js";
 import { issueKYCCredential, revocationKeyOf } from "./issuer.js";
 import { verifyCredential } from "./verifier.js";
-import { issueKycSdJwt, presentKycMinimal, presentKycWithKeyBinding, verifyKycSdJwtPresentation } from "./sdjwt.js";
+import {
+  issueKycSdJwt,
+  issueReputationSdJwt,
+  presentKycMinimal,
+  presentKycWithKeyBinding,
+  verifyKycSdJwtPresentation,
+  verifyReputationSdJwtPresentation,
+} from "./sdjwt.js";
 import { issuerAddressFromIdentifier } from "./credentialHash.js";
 import { MockPublicCaAdapter } from "./adapters/cht.js";
 import { config } from "./config.js";
@@ -161,7 +168,39 @@ async function main() {
   line(`    驗證結果：${JSON.stringify(kb2.checks)}（reason: ${kb2.reason}）`);
   assert(kb2.ok === false && kb2.checks.keyBinding === false, "轉手出示（他人私鑰）被擋下");
 
-  line("\n✅ M1 + M2.0 + 階段B e2e 全數通過。");
+  // ── 普惠金融：電信繳費信譽 VC ───────────────────────────
+  line(`\n=== 普惠金融 FinancialReputationCredential ===`);
+  line(`[9] 以電信繳費紀錄簽發信譽 VC（無聯徵者的替代信用）…`);
+  const repVc = await issueReputationSdJwt({ issuer, holderDid: holder.did }, agent);
+  const repPres = await presentKycMinimal(repVc, ["reputationTier"]);
+  const rep = await verifyReputationSdJwtPresentation(chain, repPres, { minTier: 2 });
+  line(`    實際揭露欄位：[${rep.disclosed.join(", ")}]`);
+  line(`    未揭露(隱藏)欄位：[${rep.withheld.join(", ")}]`);
+  line(`    驗證結果：${JSON.stringify(rep.checks)}`);
+  assert(rep.ok === true, "信譽出示驗證通過（reputationTier>=2 述詞）");
+  assert(rep.disclosed.length === 1 && rep.disclosed[0] === "reputationTier", "只揭露 reputationTier");
+  for (const hidden of ["tenureMonths", "onTimeRatio", "avgMonthlyBillBand"]) {
+    assert(!(hidden in (rep.payload ?? {})), `繳費明細不存在於出示內容：${hidden}`);
+  }
+
+  line(`[10] 信譽不足者（在網 3 個月、常逾繳）出示 → 述詞擋下`);
+  const lowVc = await issueReputationSdJwt(
+    {
+      issuer,
+      holderDid: holder.did,
+      billingOverride: {
+        tenureMonths: 3, onTimeRatio: 0.7, latePayments12m: 4,
+        avgMonthlyBillBand: "NT$0–999", carrier: "中華電信 (mock)",
+      },
+    },
+    agent
+  );
+  const lowPres = await presentKycMinimal(lowVc, ["reputationTier"]);
+  const low = await verifyReputationSdJwtPresentation(chain, lowPres, { minTier: 2 });
+  line(`    驗證結果：${JSON.stringify(low.checks)}（reason: ${low.reason}）`);
+  assert(low.ok === false && low.checks.predicate === false, "信譽等級不足被述詞擋下");
+
+  line("\n✅ M1 + M2.0 + 階段B + 普惠信譽 e2e 全數通過。");
 }
 
 main().catch((e) => {

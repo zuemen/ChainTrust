@@ -18,10 +18,26 @@
    pnpm --filter @chaintrust/contracts deploy:amoy
    # 或：cd packages/contracts && npx hardhat run scripts/deploy.ts --network amoy
    ```
-5. 記下 `packages/contracts/deployments/amoy.json` 內的 `IssuerRegistry` 與 `RevocationRegistry` 位址。
-6. 將 issuer-verifier 的 `ChainGateway` 切為 **Ethers**，於 `.env` 填入兩個合約位址與 `AMOY_RPC_URL`（見 `.env.example`）。
-7. 煙霧測試：用 owner 帳戶 `setTrustedIssuer`，再 `setRevoked`/`isRevoked` 一筆，確認鏈上事件。
-8. 到 PolygonScan Amoy 查交易：https://amoy.polygonscan.com/
+5. 記下 `packages/contracts/deployments/amoy.json` 內的 `IssuerRegistry` 與 `RevocationRegistry` 位址（此檔請入庫，issuer-verifier 依它讀合約位址）。
+6. 煙霧測試（會發真交易、花少量 gas）：
+   ```bash
+   pnpm --filter @chaintrust/contracts smoke:amoy
+   ```
+   腳本做四件事，並逐步印出 PolygonScan 交易連結（Demo 的「真的在鏈上」事證）：
+   - 將 **deployer 自身**設為受信任 issuer——`RevocationRegistry.revoke` 要求 `msg.sender` 受信任，
+     而 issuer-verifier 的撤銷交易由 `CHAIN_PRIVATE_KEY`（= deployer）簽，**缺這步 e2e/server 的撤銷會 revert**。
+   - （可選）`TRUST_ISSUER=0x...` 額外背書一個 issuer 位址（例如 server `/health` 回傳的 `issuerAddr`）。
+   - `revoke` 一筆測試 hash → 確認 `isRevoked=true`。
+   - `unrevoke` → 確認 `isRevoked=false`。
+7. 切 issuer-verifier 到真鏈：在 `packages/issuer-verifier/.env` 設定（見 `.env.example`）：
+   ```
+   CHAIN_MODE=ethers
+   AMOY_RPC_URL=https://rpc-amoy.polygon.technology
+   CHAIN_PRIVATE_KEY=0x同一把測試私鑰   # 簽 setTrustedIssuer/revoke；不設則唯讀
+   ```
+   合約位址不用填——自動讀 `packages/contracts/deployments/amoy.json`。
+8. 驗證端到端：`pnpm --filter @chaintrust/issuer-verifier e2e`（`CHAIN_MODE=ethers` 下每步真的上鏈，較慢屬正常）。
+9. 到 PolygonScan Amoy 查交易：https://amoy.polygonscan.com/
 
 ## 注意
 

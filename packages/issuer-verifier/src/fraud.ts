@@ -1,4 +1,5 @@
 import { config } from "./config.js";
+import { MockThreatIntelAdapter, type ThreatIntelAdapter } from "./adapters/cht.js";
 
 /** 交易／出示情境（對應 ai-service ScoreRequest；欄位缺省由服務端補預設） */
 export interface TxContext {
@@ -15,6 +16,7 @@ export interface TxContext {
   vc_age_days?: number;
   cross_institution_presentations?: number;
   payee_risk?: number;
+  payee_account_id?: string;
   geo_jump?: boolean;
   account_age_days?: number;
 }
@@ -43,24 +45,35 @@ export interface RiskAssessment {
  */
 export async function scoreTransaction(
   ctx: TxContext,
-  opts?: { baseUrl?: string; timeoutMs?: number; fetchImpl?: typeof fetch }
+  opts?: {
+    baseUrl?: string;
+    timeoutMs?: number;
+    fetchImpl?: typeof fetch;
+    threatIntelAdapter?: ThreatIntelAdapter;
+  }
 ): Promise<RiskAssessment> {
   const baseUrl = opts?.baseUrl ?? config.aiServiceUrl;
   const doFetch = opts?.fetchImpl ?? fetch;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? 5000);
   try {
+    let body: TxContext & { threat_intel_hit?: boolean } = ctx;
+    if (ctx.payee_account_id) {
+      const adapter = opts?.threatIntelAdapter ?? new MockThreatIntelAdapter();
+      const intel = await adapter.lookup(ctx.payee_account_id);
+      body = { ...ctx, threat_intel_hit: intel.hit };
+    }
     const res = await doFetch(`${baseUrl}/score`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(ctx),
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
     if (!res.ok) {
       return { risk: null, decision: "review", reasons: [`FRAUD_HTTP_${res.status}`], source: "unavailable" };
     }
-    const body = (await res.json()) as RiskAssessment;
-    return body;
+    const responseBody = (await res.json()) as RiskAssessment;
+    return responseBody;
   } catch (e: any) {
     return {
       risk: null,

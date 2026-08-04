@@ -5,7 +5,13 @@ import { fileURLToPath } from "url";
 
 /**
  * ChainGateway — 抽象鏈上信任根/撤銷查詢，讓 verifier 與鏈實作解耦。
- * （對應 ADR-007：BaaS 切換以 adapter 完成，呼叫端不變。）
+ * （對應 ADR-007：BaaS 切換以 adapter 完成，呼叫端不變；文件/poc-spec.md 稱此為
+ * `BaasAdapter`，程式碼實際命名為 `ChainGateway`，兩者指同一個切換點。）
+ *
+ * 目標產品：中華電信「區塊鏈即服務平台」（BaaS，雲端 REST API，支援 Ethereum／
+ * Hyperledger，機房在 hicloud）。`EthersChainGateway`（見下）已示範以 ethers.js
+ * 呼叫任一 EVM 相容 RPC 端點，落地時把 RPC URL 換成 CHT BaaS 的 Ethereum 端點即可，
+ * 不需改動此介面或呼叫端。詳見 `docs/completeness-roadmap.md` §3.1（2026-07-21 調研）。
  */
 export interface ChainGateway {
   isTrustedIssuer(issuerAddress: string): Promise<boolean>;

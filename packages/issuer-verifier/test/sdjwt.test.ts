@@ -11,7 +11,11 @@ import {
   presentKycMinimal,
   presentKycWithKeyBinding,
   verifyKycSdJwtPresentation,
+  issueReputationSdJwt,
+  verifyReputationSdJwtPresentation,
+  reputationTierFromBilling,
   KYC_SD_CLAIMS,
+  REPUTATION_SD_CLAIMS,
 } from "../src/sdjwt.js";
 import { issuerAddressFromIdentifier } from "../src/credentialHash.js";
 
@@ -89,6 +93,96 @@ describe("SD-JWT 選擇性揭露 (M2.0)", () => {
     expect(r.ok).toBe(false);
     expect(r.checks.predicate).toBe(false);
     expect(r.disclosed).toEqual([]);
+  });
+});
+
+describe("FinancialReputationCredential 普惠信譽 (SD-JWT)", () => {
+  let agent: ChainTrustAgent;
+  let issuer: Awaited<ReturnType<typeof createIssuerDid>>;
+  let holder: Awaited<ReturnType<typeof createHolderDid>>;
+  let chain: InMemoryChainGateway;
+
+  beforeAll(async () => {
+    agent = createVeramoAgent();
+    issuer = await createIssuerDid(agent);
+    holder = await createHolderDid(agent);
+    chain = new InMemoryChainGateway();
+    await chain.setTrustedIssuer(issuerAddressFromIdentifier(issuer), true);
+  });
+
+  it("tier 規則：多年準時繳費=3；一年以上尚可=2；否則=1", () => {
+    const base = { avgMonthlyBillBand: "x", carrier: "c" };
+    expect(
+      reputationTierFromBilling({ ...base, tenureMonths: 78, onTimeRatio: 0.98, latePayments12m: 0 })
+    ).toBe(3);
+    expect(
+      reputationTierFromBilling({ ...base, tenureMonths: 18, onTimeRatio: 0.9, latePayments12m: 2 })
+    ).toBe(2);
+    expect(
+      reputationTierFromBilling({ ...base, tenureMonths: 6, onTimeRatio: 0.99, latePayments12m: 0 })
+    ).toBe(1);
+  });
+
+  it("最小揭露：只揭露 reputationTier，繳費明細不存在於出示內容", async () => {
+    const vc = await issueReputationSdJwt({ issuer, holderDid: holder.did }, agent);
+    const pres = await presentKycMinimal(vc, ["reputationTier"]);
+    const r = await verifyReputationSdJwtPresentation(chain, pres, { minTier: 2 });
+
+    expect(r.ok).toBe(true);
+    expect(r.disclosed).toEqual(["reputationTier"]);
+    const keys = Object.keys(r.payload ?? {});
+    for (const hidden of ["tenureMonths", "onTimeRatio", "avgMonthlyBillBand"]) {
+      expect(keys).not.toContain(hidden);
+    }
+    expect(r.checks).toEqual({
+      signature: true,
+      trustedIssuer: true,
+      notRevoked: true,
+      predicate: true,
+    });
+  });
+
+  it("withheld 清單涵蓋所有未揭露的信譽 SD claim", async () => {
+    const vc = await issueReputationSdJwt({ issuer, holderDid: holder.did }, agent);
+    const pres = await presentKycMinimal(vc, ["reputationTier"]);
+    const r = await verifyReputationSdJwtPresentation(chain, pres);
+    const expectedWithheld = REPUTATION_SD_CLAIMS.filter((k) => k !== "reputationTier");
+    expect(r.withheld.sort()).toEqual([...expectedWithheld].sort());
+  });
+
+  it("信譽不足（tier 1）→ predicate=false", async () => {
+    const vc = await issueReputationSdJwt(
+      {
+        issuer,
+        holderDid: holder.did,
+        billingOverride: {
+          tenureMonths: 3,
+          onTimeRatio: 0.7,
+          latePayments12m: 4,
+          avgMonthlyBillBand: "NT$0–999",
+          carrier: "中華電信 (mock)",
+        },
+      },
+      agent
+    );
+    const pres = await presentKycMinimal(vc, ["reputationTier"]);
+    const r = await verifyReputationSdJwtPresentation(chain, pres, { minTier: 2 });
+    expect(r.ok).toBe(false);
+    expect(r.checks.predicate).toBe(false);
+    expect(r.reason).toMatch(/reputationTier/);
+  });
+
+  it("撤銷後信譽出示驗證失敗 (notRevoked=false)", async () => {
+    const vc = await issueReputationSdJwt({ issuer, holderDid: holder.did }, agent);
+    const pres = await presentKycMinimal(vc, ["reputationTier"]);
+    const ok = await verifyReputationSdJwtPresentation(chain, pres);
+    expect(ok.ok).toBe(true);
+
+    const key = (ok.payload as any).credentialStatus.revocationKey;
+    await chain.revoke(key);
+    const r = await verifyReputationSdJwtPresentation(chain, pres);
+    expect(r.ok).toBe(false);
+    expect(r.checks.notRevoked).toBe(false);
   });
 });
 

@@ -140,10 +140,24 @@ def score(row: Mapping[str, Any]) -> ScoreResponse:
     if not codes and risk >= PASS_MAX:
         codes = ["MODEL_ANOMALY"]
 
+    # 情資命中：獨立於模型判斷之外的加成（ADR-007 CHT Security 情資 mock）。
+    # 規則模式（bundle is None 分支）不需要這段，因為 rule_risk() 已經把 WEIGHTS 加總進去了。
+    if "THREAT_INTEL_HIT" in codes:
+        risk = max(0, min(100, risk + WEIGHTS["THREAT_INTEL_HIT"]))
+
     # top_factors：優先用模型 SHAP 貢獻；取不到則退回規則權重
     top = _top_factors_from_model(bundle, x)
     if not top:
         top = _top_factors_from_rules(codes)
+    if "THREAT_INTEL_HIT" in codes:
+        top = [
+            TopFactor(
+                feature="THREAT_INTEL_HIT",
+                label=REASON_LABELS["THREAT_INTEL_HIT"],
+                impact=float(WEIGHTS["THREAT_INTEL_HIT"]),
+            )
+        ] + top
+        top = top[:3]
 
     conf = prob_confidence(p_fraud)
     return ScoreResponse(

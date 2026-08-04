@@ -8,6 +8,7 @@
     "compile": "hardhat compile",
     "test": "hardhat test",
     "deploy:amoy": "hardhat run scripts/deploy.ts --network amoy",
+    "smoke:amoy": "hardhat run scripts/smoke-amoy.ts --network amoy",
     "node": "hardhat node",
     "clean": "hardhat clean"
   },

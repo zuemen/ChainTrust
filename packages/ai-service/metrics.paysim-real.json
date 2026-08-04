@@ -1,0 +1,120 @@
+{
+  "source": "PaySim + 半合成 CHT 訊號 (D:\\ChainTrust\\packages\\ai-service\\data\\paysim.csv)",
+  "rows": 6362620,
+  "fraud": 8213,
+  "primary_metric": "PR-AUC",
+  "fraud_prevalence": 0.0042,
+  "holdout_pr_auc": 0.9978,
+  "holdout_roc_auc": 0.9999,
+  "holdout_auc": 0.9999,
+  "recall_at_fpr_1pct": 0.9998,
+  "precision_at_100": 1.0,
+  "mcc": 0.9987,
+  "threshold": 0.05,
+  "recall_at_threshold": 0.9998,
+  "confusion_at_threshold": {
+    "tp": 4007,
+    "fp": 9,
+    "fn": 1,
+    "tn": 950376
+  },
+  "calibration": "isotonic",
+  "calibration_quality": {
+    "ece": 0.0,
+    "brier": 0.0,
+    "reliability_curve": [
+      {
+        "pred_mean": 0.0,
+        "frac_fraud": 0.0,
+        "count": 950377
+      },
+      {
+        "pred_mean": 0.9877,
+        "frac_fraud": 0.9978,
+        "count": 4016
+      }
+    ]
+  },
+  "baselines": {
+    "rules_only": {
+      "pr_auc": 0.1665,
+      "roc_auc": 0.9876
+    },
+    "logistic_regression": {
+      "pr_auc": 0.998,
+      "roc_auc": 0.9993
+    },
+    "lightgbm": {
+      "pr_auc": 0.9978,
+      "roc_auc": 0.9999
+    }
+  },
+  "cht_signal_ablation": {
+    "without_cht_pr_auc": 0.9988,
+    "with_cht_pr_auc": 0.9978,
+    "lift_pr_auc": -0.001,
+    "lift_pct": -0.1,
+    "signals": [
+      "tx_count_1h",
+      "tx_count_24h",
+      "device_changed",
+      "mobile_realname_verified",
+      "vc_age_days",
+      "account_age_days",
+      "cross_institution_presentations",
+      "payee_risk",
+      "geo_jump"
+    ]
+  },
+  "split": "out-of-time (by step)",
+  "top_feature_importances": [
+    {
+      "feature": "payee_risk",
+      "importance": 15
+    },
+    {
+      "feature": "errorBalanceOrig",
+      "importance": 14
+    },
+    {
+      "feature": "vc_age_days",
+      "importance": 13
+    },
+    {
+      "feature": "drain_ratio",
+      "importance": 11
+    },
+    {
+      "feature": "newbalanceOrig",
+      "importance": 7
+    },
+    {
+      "feature": "tx_count_24h",
+      "importance": 7
+    },
+    {
+      "feature": "errorBalanceDest",
+      "importance": 6
+    },
+    {
+      "feature": "account_age_days",
+      "importance": 6
+    },
+    {
+      "feature": "amount",
+      "importance": 5
+    },
+    {
+      "feature": "tx_count_1h",
+      "importance": 5
+    },
+    {
+      "feature": "velocity_ratio",
+      "importance": 5
+    },
+    {
+      "feature": "oldbalanceOrg",
+      "importance": 4
+    }
+  ]
+}

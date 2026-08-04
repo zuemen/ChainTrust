@@ -30,6 +30,7 @@ class ScoreRequest(BaseModel):
     vc_age_days: int = 365
     cross_institution_presentations: int = 0
     payee_risk: float = 0.0  # 0..1
+    threat_intel_hit: bool = False  # 來自 CHT Security 情資 mock（TS 端於送出 /score 前查詢 ThreatIntelAdapter）
     geo_jump: bool = False
     account_age_days: int = 365
 

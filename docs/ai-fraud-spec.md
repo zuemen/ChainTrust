@@ -46,9 +46,19 @@ eval（AUC、PR-AUC、人頭召回）→ IsolationForest fit（正常樣本）�
 - `/score`：人頭樣本 → `block` ＋ reasons；正常 → `pass`。
 - pytest：固定向量回歸測試。
 
+## 台灣防詐政策對齊
+
+本模組的樣態設計對齊台灣現行防詐制度，簡報與落地提案可直接引用：
+
+- **打詐綱領（行政院「新世代打擊詐欺策略行動綱領」）**：識詐、堵詐、阻詐、懲詐四面向中，本系統落在「**阻詐**」（金流面即時攔截）與「堵詐」（門號實名信任根杜絕人頭門號開戶）。
+- **詐欺犯罪危害防制條例（2024）**：課予金融機構與電信事業防詐義務——本案「銀行 Verifier + 電信信任根」的雙主體架構正對應條例的兩大義務主體。
+- **警示帳戶新制**：警示／衍生管制帳戶每日轉帳、提領各以 NT$1 萬為限。詐團以「多筆 9,900」規避 → `STRUCTURING_THRESHOLDS` 已含 10,000 門檻，`near_threshold` 特徵 + `STRUCTURING` reason code 直接命中此樣態（見 `demo_data.json: watchlist_limit_evasion`）。
+- **165 打詐儀錶板**：財損統計可佐證題目重要性；落地時可用其公開統計校準情境權重。
+- **機房／水房分工**：`FAN_IN_COLLECTION`（聚合戶）與 `MULE_RING`（圖譜人頭環）對應水房提領層；`PASS_THROUGH` 對應過水帳戶層。
+
 ## 跨機構情資（差異化，PoC mock → 落地）
 
-`FraudIntelAdapter`：PoC 用合成黑名單；落地接中華電信 CHT Security 情資。
+`ThreatIntelAdapter`：PoC mock 比對小型內建黑名單，已接進 `/score`（命中 +35 分，見 `packages/ai-service/app/rules.py` 的 `THREAT_INTEL_HIT`）；落地接中華電信 CHT Security 情資。
 未來以**聯邦學習／隱私計算**跨行共享風險訊號而不交換明文（簡報的護城河論點）。
 
 ## 決賽簡報要展示

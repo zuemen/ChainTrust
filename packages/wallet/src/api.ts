@@ -125,17 +125,25 @@ export async function issueMobile(
   return postJson("/issue/mobile", { holderDid, msisdn });
 }
 
+/** 普惠金融：以電信繳費紀錄申請財務信譽 VC（同一 holderDid 可與 KYC 憑證共存） */
+export async function issueReputation(holderDid?: string): Promise<{
+  vc: string;
+  holderDid: string;
+  issuerDid: string;
+}> {
+  return postJson("/sdjwt/issue-reputation", { holderDid });
+}
+
+export type PresentationKind = "kyc" | "reputation";
+
 export async function verifyPresentation(
   presentation: string,
   tx: TxContext,
-  opts?: { requireKeyBinding?: boolean; expectedNonce?: string }
+  kind: PresentationKind = "kyc",
+  opts?: { nonce?: string }
 ): Promise<VerifyResponse> {
-  return postJson("/sdjwt/verify", {
-    presentation,
-    tx,
-    requireKeyBinding: opts?.requireKeyBinding,
-    expectedNonce: opts?.expectedNonce,
-  });
+  // 驗證政策（是否強制 key binding、aud）一律由伺服器決定，前端只回傳挑戰用的 nonce。
+  return postJson("/sdjwt/verify", { presentation, tx, kind, nonce: opts?.nonce });
 }
 
 export async function getMetrics(): Promise<MetricsResponse> {

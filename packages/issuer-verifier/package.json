@@ -10,6 +10,7 @@
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
     "e2e": "tsx src/e2e.ts",
+    "smoke:browser": "tsx scripts/smokeBrowserWallet.ts",
     "test": "vitest run"
   },
   "dependencies": {

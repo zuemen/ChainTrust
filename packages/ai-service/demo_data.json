@@ -93,6 +93,17 @@
       }
     },
     {
+      "label": "watchlist_limit_evasion",
+      "expect": "block",
+      "comment": "台灣警示帳戶新制：每日轉帳/提領 ≤ NT$1 萬。詐團以 9,900 多筆規避 → 結構化拆分＋高頻",
+      "ctx": {
+        "type": "TRANSFER", "amount": 9900, "oldbalanceOrg": 45000, "newbalanceOrig": 35100,
+        "oldbalanceDest": 120000, "newbalanceDest": 129900, "tx_count_1h": 4, "tx_count_24h": 22,
+        "device_changed": false, "mobile_realname_verified": false, "vc_age_days": 20,
+        "account_age_days": 25, "cross_institution_presentations": 5, "payee_risk": 0.78, "geo_jump": false
+      }
+    },
+    {
       "label": "fan_in_collection",
       "expect": "block",
       "ctx": {
@@ -101,6 +112,18 @@
         "device_changed": true, "mobile_realname_verified": false, "vc_age_days": 6,
         "account_age_days": 5, "cross_institution_presentations": 9, "payee_risk": 0.7, "geo_jump": false,
         "payee_fan_in": 2, "account_graph_risk": 0.85
+      }
+    },
+    {
+      "label": "threat_intel_hit_known_mule",
+      "expect": "review",
+      "comment": "CHT Security 情資命中：交易本身模型判為 pass（risk=23），情資確認後加成 35 分升級為 review（人工複核）",
+      "ctx": {
+        "type": "TRANSFER", "amount": 15000, "oldbalanceOrg": 40000, "newbalanceOrig": 25000,
+        "oldbalanceDest": 5000, "newbalanceDest": 20000, "tx_count_1h": 3, "tx_count_24h": 8,
+        "device_changed": true, "mobile_realname_verified": false, "vc_age_days": 30,
+        "account_age_days": 20, "cross_institution_presentations": 3, "payee_risk": 0.4, "geo_jump": true,
+        "threat_intel_hit": true
       }
     }
   ]

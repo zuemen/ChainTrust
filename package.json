@@ -18,7 +18,7 @@
     "wallet:dev": "pnpm --filter @chaintrust/wallet dev",
     "wallet:build": "pnpm --filter @chaintrust/wallet build",
     "ai:dev": "pnpm --filter @chaintrust/ai-service dev",
-    "ai:setup": "pnpm --filter @chaintrust/ai-service setup",
+    "ai:setup": "pnpm --filter @chaintrust/ai-service run setup",
     "ai:train": "pnpm --filter @chaintrust/ai-service train",
     "demo": "powershell -ExecutionPolicy Bypass -File scripts/demo.ps1",
     "smoke": "node scripts/smoke.mjs",

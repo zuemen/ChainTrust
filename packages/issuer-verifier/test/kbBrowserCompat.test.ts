@@ -12,11 +12,11 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { randomBytes, createHash } from "crypto";
 import { SigningKey, sha256 as ethSha256, toUtf8Bytes, getBytes } from "ethers";
-import { createVeramoAgent, createIssuerDid } from "./agent.js";
-import { InMemoryChainGateway } from "./chain/gateway.js";
-import { issuerAddressFromIdentifier } from "./credentialHash.js";
-import { issueKycSdJwt, verifyKycSdJwtPresentation } from "./sdjwt.js";
-import type { ChainTrustAgent } from "./agent.js";
+import { createVeramoAgent, createIssuerDid } from "../src/agent.js";
+import { InMemoryChainGateway } from "../src/chain/gateway.js";
+import { issuerAddressFromIdentifier } from "../src/credentialHash.js";
+import { issueKycSdJwt, verifyKycSdJwtPresentation } from "../src/sdjwt.js";
+import type { ChainTrustAgent } from "../src/agent.js";
 import type { IIdentifier } from "@veramo/core";
 
 // ── 鏡像 wallet/src/keys.ts 的編碼（base58btc encode + did:key + KB 組裝）──

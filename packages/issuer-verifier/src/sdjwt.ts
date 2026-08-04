@@ -8,10 +8,19 @@ import type { ChainGateway } from "./chain/gateway.js";
 import { credentialHash } from "./credentialHash.js";
 import { secp256k1PublicKeyFromDidKey, checkTrustAndRevocation } from "./verifier.js";
 import { REVOCATION_STATUS_TYPE } from "./issuer.js";
+import { MockBillingHistoryAdapter, type BillingSummary } from "./adapters/cht.js";
 
 /** KYC VC 中可選擇揭露的 claim（其餘如 iss/vct/sub/credentialStatus 常駐可見） */
 export const KYC_SD_CLAIMS = ["kycLevel", "over18", "country", "fullName", "birthDate"] as const;
 type KycSdClaim = (typeof KYC_SD_CLAIMS)[number];
+
+/** 普惠金融：信譽 VC 中可選擇揭露的 claim（最小揭露預設只出示 reputationTier） */
+export const REPUTATION_SD_CLAIMS = [
+  "reputationTier",
+  "tenureMonths",
+  "onTimeRatio",
+  "avgMonthlyBillBand",
+] as const;
 
 // ── base64url ─────────────────────────────────────────────
 function b64uToString(s: string): string {
@@ -159,10 +168,65 @@ export async function issueKycSdJwt(input: IssueKycSdJwtInput, agent: ChainTrust
   return sdjwt.issue(payload, disclosureFrame as any);
 }
 
+// ── 普惠金融：FinancialReputationCredential（電信繳費信譽）──
+
+/** 由繳費摘要推信譽等級：3=優良、2=良好、1=待累積。規則透明、可向使用者與監理稽核解釋。 */
+export function reputationTierFromBilling(s: BillingSummary): number {
+  if (s.tenureMonths >= 36 && s.onTimeRatio >= 0.95 && s.latePayments12m === 0) return 3;
+  if (s.tenureMonths >= 12 && s.onTimeRatio >= 0.85) return 2;
+  return 1;
+}
+
+export interface IssueReputationSdJwtInput {
+  issuer: IIdentifier;
+  holderDid: string;
+  msisdn?: string;
+  /** 測試/展示用：覆寫繳費摘要（預設走 BillingHistoryAdapter mock） */
+  billingOverride?: BillingSummary;
+}
+
+/**
+ * 簽發 SD-JWT FinancialReputationCredential：電信繳費紀錄 → 可攜財務信譽。
+ * 普惠金融核心：無聯徵紀錄者（學生/新住民/自由工作者）以繳費史累積可驗證信譽；
+ * 明細不出錢包，出示時預設只揭露 reputationTier。
+ */
+export async function issueReputationSdJwt(
+  input: IssueReputationSdJwtInput,
+  agent: ChainTrustAgent
+): Promise<string> {
+  const kid = input.issuer.keys[0]?.kid;
+  if (!kid) throw new Error("Issuer identifier 無金鑰 kid");
+  const billing =
+    input.billingOverride ??
+    (await new MockBillingHistoryAdapter().getBillingSummary(input.msisdn ?? "0912345678"));
+  const sdjwt = issuerInstance(agent, kid);
+  const id = `urn:uuid:${randomUUID()}`;
+  const payload = {
+    iss: input.issuer.did,
+    iat: Math.floor(Date.now() / 1000),
+    vct: "FinancialReputationCredential",
+    sub: input.holderDid,
+    jti: id,
+    carrier: billing.carrier, // 常駐可見（發證脈絡，非個資）
+    reputationTier: reputationTierFromBilling(billing),
+    tenureMonths: billing.tenureMonths,
+    onTimeRatio: billing.onTimeRatio,
+    avgMonthlyBillBand: billing.avgMonthlyBillBand,
+    credentialStatus: {
+      id: `chaintrust:revocation#${credentialHash(id)}`,
+      type: REVOCATION_STATUS_TYPE,
+      revocationKey: credentialHash(id),
+    },
+    cnf: { jwk: jwkFromDidKey(input.holderDid) },
+  };
+  const disclosureFrame = { _sd: [...REPUTATION_SD_CLAIMS] };
+  return sdjwt.issue(payload, disclosureFrame as any);
+}
+
 /** Holder 出示：只揭露指定 claim（預設只揭露 kycLevel 供述詞檢查），其餘 PII 不洩 */
 export async function presentKycMinimal(
   sdJwtVc: string,
-  revealKeys: KycSdClaim[] = ["kycLevel"]
+  revealKeys: string[] = ["kycLevel"]
 ): Promise<string> {
   const sdjwt = holderVerifierInstance();
   const frame: Record<string, boolean> = {};
@@ -179,7 +243,7 @@ export async function presentKycWithKeyBinding(
   agent: ChainTrustAgent,
   holder: IIdentifier,
   sdJwtVc: string,
-  revealKeys: KycSdClaim[],
+  revealKeys: string[],
   kb: { aud: string; nonce: string }
 ): Promise<string> {
   const kid = holder.keys[0]?.kid;
@@ -269,22 +333,32 @@ export interface SdJwtVerifyResult {
   reason?: string;
 }
 
+/** 述詞（policy）：由驗證情境決定，對已揭露 payload 評估 */
+interface SdJwtPredicate {
+  evaluate: (payload: Record<string, any>) => boolean;
+  failReason: (payload: Record<string, any>) => string;
+}
+
+interface SdJwtKbOpts {
+  requireKeyBinding?: boolean;
+  expectedAud?: string;
+  expectedNonce?: string;
+}
+
 /**
- * 驗證 SD-JWT 出示：
+ * 驗證 SD-JWT 出示（泛用，KYC / 信譽共用）：
  *  1) 驗章（揭露雜湊比對 + ES256K）— 即使缺完整 PII 也能驗
  *  2) isTrustedIssuer（由 iss did:key 推導位址）
  *  3) isRevoked（credentialStatus.revocationKey）
- *  4) 述詞 kycLevel >= minKycLevel
+ *  4) 述詞（由呼叫端注入，如 kycLevel>=2、reputationTier>=2）
+ *  5) key binding（出示含 KB 或要求 KB 時）
  */
-export async function verifyKycSdJwtPresentation(
+async function verifySdJwtPresentation(
   chain: ChainGateway,
   presentation: string,
-  opts?: {
-    minKycLevel?: number;
-    requireKeyBinding?: boolean;
-    expectedAud?: string;
-    expectedNonce?: string;
-  }
+  sdClaims: readonly string[],
+  predicate: SdJwtPredicate,
+  opts?: SdJwtKbOpts
 ): Promise<SdJwtVerifyResult> {
   const checks: SdJwtVerifyChecks = {
     signature: false,
@@ -314,13 +388,13 @@ export async function verifyKycSdJwtPresentation(
       ok: false,
       checks,
       disclosed: [],
-      withheld: [...KYC_SD_CLAIMS],
+      withheld: [...sdClaims],
       reason: `SD-JWT 驗章失敗：${e?.message ?? e}`,
     };
   }
 
-  const disclosed = KYC_SD_CLAIMS.filter((k) => k in payload);
-  const withheld = KYC_SD_CLAIMS.filter((k) => !(k in payload));
+  const disclosed = sdClaims.filter((k) => k in payload);
+  const withheld = sdClaims.filter((k) => !(k in payload));
 
   // 2)+3) 信任根 + 撤銷（與 verifier.ts 共用 helper）
   const tr = await checkTrustAndRevocation(
@@ -335,9 +409,8 @@ export async function verifyKycSdJwtPresentation(
     return { ok: false, checks, issuerAddress, disclosed, withheld, reason: tr.reason };
   }
 
-  // 4) 述詞 kycLevel >= 門檻
-  const minLevel = opts?.minKycLevel ?? 2;
-  checks.predicate = typeof payload.kycLevel === "number" && payload.kycLevel >= minLevel;
+  // 4) 述詞（由驗證情境注入）
+  checks.predicate = predicate.evaluate(payload);
   if (!checks.predicate) {
     return {
       ok: false,
@@ -346,7 +419,7 @@ export async function verifyKycSdJwtPresentation(
       disclosed,
       withheld,
       payload,
-      reason: `述詞未滿足：需 kycLevel>=${minLevel}（揭露值：${payload.kycLevel ?? "未揭露"}）`,
+      reason: predicate.failReason(payload),
     };
   }
 
@@ -371,4 +444,44 @@ export async function verifyKycSdJwtPresentation(
   }
 
   return { ok: true, checks, issuerAddress, disclosed, withheld, payload };
+}
+
+/** 驗證 KYC 出示：述詞 kycLevel >= minKycLevel（預設 2） */
+export async function verifyKycSdJwtPresentation(
+  chain: ChainGateway,
+  presentation: string,
+  opts?: { minKycLevel?: number } & SdJwtKbOpts
+): Promise<SdJwtVerifyResult> {
+  const minLevel = opts?.minKycLevel ?? 2;
+  return verifySdJwtPresentation(
+    chain,
+    presentation,
+    KYC_SD_CLAIMS,
+    {
+      evaluate: (p) => typeof p.kycLevel === "number" && p.kycLevel >= minLevel,
+      failReason: (p) =>
+        `述詞未滿足：需 kycLevel>=${minLevel}（揭露值：${p.kycLevel ?? "未揭露"}）`,
+    },
+    opts
+  );
+}
+
+/** 驗證信譽出示（普惠金融）：述詞 reputationTier >= minTier（預設 2） */
+export async function verifyReputationSdJwtPresentation(
+  chain: ChainGateway,
+  presentation: string,
+  opts?: { minTier?: number } & SdJwtKbOpts
+): Promise<SdJwtVerifyResult> {
+  const minTier = opts?.minTier ?? 2;
+  return verifySdJwtPresentation(
+    chain,
+    presentation,
+    REPUTATION_SD_CLAIMS,
+    {
+      evaluate: (p) => typeof p.reputationTier === "number" && p.reputationTier >= minTier,
+      failReason: (p) =>
+        `述詞未滿足：需 reputationTier>=${minTier}（揭露值：${p.reputationTier ?? "未揭露"}）`,
+    },
+    opts
+  );
 }
