@@ -53,12 +53,20 @@ venv/
 packages/wallet/dist/
 .vite/
 
+# === 提案書 / 參賽文件（含未公開內容，不入庫）===
+proposal/
+
 # === Editors / OS ===
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
 *.swp
+*.tmp
+*.temp
+# LibreOffice / OpenOffice 鎖檔（.~lock.xxx.odt#）
+.~lock*
+~$*
 
 # === 本地 AI 工具（ruflo / Claude Code），不入庫 ===
 .claude/
