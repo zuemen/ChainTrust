@@ -73,4 +73,79 @@ describe("IssuerRegistry", () => {
       registry.connect(other).setTrustedIssuers([issuer.address], true)
     ).to.be.revertedWithCustomError(registry, "OwnableUnauthorizedAccount");
   });
+
+  // === _set no-op 短路 ===
+  describe("_set no-op 短路", () => {
+    it("重複設為 true 不再發事件", async () => {
+      const { registry, issuer } = await deploy();
+      await registry.setTrustedIssuer(issuer.address, true);
+      await expect(registry.setTrustedIssuer(issuer.address, true)).to.not.emit(
+        registry,
+        "IssuerTrustChanged"
+      );
+      expect(await registry.isTrustedIssuer(issuer.address)).to.equal(true);
+    });
+
+    it("對從未信任者設為 false 不發事件", async () => {
+      const { registry, issuer } = await deploy();
+      await expect(registry.setTrustedIssuer(issuer.address, false)).to.not.emit(
+        registry,
+        "IssuerTrustChanged"
+      );
+      expect(await registry.isTrustedIssuer(issuer.address)).to.equal(false);
+    });
+
+    it("no-op 仍檢查 zero address", async () => {
+      const { registry } = await deploy();
+      await expect(
+        registry.setTrustedIssuer(ethers.ZeroAddress, false)
+      ).to.be.revertedWithCustomError(registry, "ZeroIssuer");
+    });
+  });
+
+  // === 擁有權：停用 renounce + 兩步移轉 ===
+  describe("擁有權", () => {
+    it("renounceOwnership 一律 revert（信任根不可被凍結）", async () => {
+      const { registry, other } = await deploy();
+      await expect(registry.renounceOwnership()).to.be.revertedWithCustomError(
+        registry,
+        "RenounceDisabled"
+      );
+      await expect(
+        registry.connect(other).renounceOwnership()
+      ).to.be.revertedWithCustomError(registry, "RenounceDisabled");
+    });
+
+    it("Ownable2Step：transferOwnership 只設 pending，owner 不變", async () => {
+      const { registry, owner, other } = await deploy();
+      await expect(registry.transferOwnership(other.address))
+        .to.emit(registry, "OwnershipTransferStarted")
+        .withArgs(owner.address, other.address);
+      expect(await registry.owner()).to.equal(owner.address);
+      expect(await registry.pendingOwner()).to.equal(other.address);
+    });
+
+    it("Ownable2Step：pending owner accept 後才真正移轉", async () => {
+      const { registry, owner, other } = await deploy();
+      await registry.transferOwnership(other.address);
+      await expect(registry.connect(other).acceptOwnership())
+        .to.emit(registry, "OwnershipTransferred")
+        .withArgs(owner.address, other.address);
+      expect(await registry.owner()).to.equal(other.address);
+      expect(await registry.pendingOwner()).to.equal(ethers.ZeroAddress);
+      // 新 owner 可設定、舊 owner 不可
+      await registry.connect(other).setTrustedIssuer(owner.address, true);
+      await expect(
+        registry.setTrustedIssuer(owner.address, false)
+      ).to.be.revertedWithCustomError(registry, "OwnableUnauthorizedAccount");
+    });
+
+    it("Ownable2Step：非 pending owner 不可 accept（revert）", async () => {
+      const { registry, issuer, other } = await deploy();
+      await registry.transferOwnership(other.address);
+      await expect(
+        registry.connect(issuer).acceptOwnership()
+      ).to.be.revertedWithCustomError(registry, "OwnableUnauthorizedAccount");
+    });
+  });
 });

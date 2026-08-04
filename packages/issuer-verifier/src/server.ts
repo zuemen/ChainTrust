@@ -15,7 +15,7 @@ import {
   verifyKycSdJwtPresentation,
   verifyReputationSdJwtPresentation,
 } from "./sdjwt.js";
-import { randomUUID } from "crypto";
+import { randomUUID, timingSafeEqual } from "crypto";
 import { scoreTransaction, fetchMetrics } from "./fraud.js";
 import { issuerAddressFromIdentifier } from "./credentialHash.js";
 import { config } from "./config.js";
@@ -26,19 +26,31 @@ import { config } from "./config.js";
  */
 async function buildChain(): Promise<ChainGateway> {
   if (config.chainMode === "ethers") {
-    const dep = loadDeployment("amoy");
-    if (!dep) throw new Error("CHAIN_MODE=ethers 但缺 deployments/amoy.json");
+    // 部署檔網路名不再寫死 "amoy"：切到 CHT BaaS 或其他測試網時，
+    // 讀到另一條鏈的合約位址只會靜默回 false，不會有人發現。
+    const net = config.deploymentNetwork;
+    const dep = loadDeployment(net);
+    if (!dep) throw new Error(`CHAIN_MODE=ethers 但缺 deployments/${net}.json`);
     return new EthersChainGateway({
       rpcUrl: config.amoyRpcUrl,
       issuerRegistry: dep.contracts.IssuerRegistry,
       revocationRegistry: dep.contracts.RevocationRegistry,
       privateKey: config.chainPrivateKey,
+      expectedChainId: config.ethrChainId,
     });
   }
   return new InMemoryChainGateway();
 }
 
 async function main() {
+  // fail-closed：非開發環境缺 API_KEY 直接拒絕啟動，而不是靜默放行簽發／撤銷端點。
+  if (config.nodeEnv !== "development" && !config.apiKey) {
+    console.error(
+      `[issuer-verifier] NODE_ENV=${config.nodeEnv} 但未設 API_KEY：` +
+        "簽發與撤銷端點將無保護，拒絕啟動。請設定 API_KEY 環境變數。"
+    );
+    process.exit(1);
+  }
   const agent = createVeramoAgent();
   const chain = await buildChain();
   const issuer = await createIssuerDid(agent);
@@ -89,14 +101,34 @@ async function main() {
     res.status(500).json({ error: "internal_error" });
   };
 
-  // mutating 端點守門：設了 API_KEY 才強制檢查 X-API-Key（dev 未設則放行）
+  // mutating 端點守門（fail-closed）。
+  //
+  // 舊版是 `if (!config.apiKey) return next()` —— 未設 API_KEY 直接放行，
+  // 而 docker-compose 從未把 API_KEY 傳進容器，等於簽發/撤銷端點長期裸奔：
+  // 任何人可 POST /sdjwt/issue 取得受信任 issuer 簽發的 full KYC 憑證。
+  // 現在啟動時就會拒絕在非開發環境下缺 key（見 main() 末段），這裡只留下明確拒絕。
   const requireApiKey: express.RequestHandler = (req, res, next) => {
-    if (!config.apiKey) return next();
-    if (req.header("X-API-Key") === config.apiKey) return next();
+    if (!config.apiKey) {
+      return res.status(503).json({ error: "api_key_not_configured" });
+    }
+    const provided = req.header("X-API-Key") ?? "";
+    // 常數時間比較，避免以回應時間逐字元猜測金鑰
+    const a = Buffer.from(provided);
+    const b = Buffer.from(config.apiKey);
+    if (a.length === b.length && timingSafeEqual(a, b)) return next();
     return res.status(401).json({ error: "unauthorized" });
   };
 
+  // /health：存活狀態 + issuer DID。
+  //
+  // issuer DID 是刻意公開的：SSI 的信任根本來就該可公開查核（等同 CA 憑證），
+  // 且 C1/C2 修復後，知道受信任 issuer 是誰並不能幫助攻擊者偽造憑證。
+  // 但第二發證者位址、chainMode 等營運細節仍收斂到需鑑權的 /info。
   app.get("/health", (_req, res) => {
+    res.json({ ok: true, issuerDid: issuer.did });
+  });
+
+  app.get("/info", requireApiKey, (_req, res) => {
     res.json({
       ok: true,
       chainMode: config.chainMode,
@@ -134,57 +166,94 @@ async function main() {
   });
 
   // 階段 B：驗證方核發一次性 nonce（防重放）。aud = 本驗證方識別。
+  //
+  // 舊版是永不清理、無上限的 Set：任何人迴圈打未鑑權的 /sdjwt/nonce 即可耗盡記憶體，
+  // 且舊 nonce 永久有效。改為帶到期時間的 Map + 容量上限 + 惰性清掃。
   const VERIFIER_AUD = config.verifierAud;
-  const issuedNonces = new Set<string>();
+  const NONCE_TTL_MS = 5 * 60_000;
+  const NONCE_MAX = 10_000;
+  const issuedNonces = new Map<string, number>();
+
+  const sweepNonces = () => {
+    const now = Date.now();
+    for (const [n, exp] of issuedNonces) if (exp <= now) issuedNonces.delete(n);
+  };
+  /** 原子取用：檢查與刪除一次完成，避免兩個併發請求帶同一 nonce 同時通過（TOCTOU） */
+  const consumeNonce = (nonce: unknown): boolean => {
+    if (typeof nonce !== "string") return false;
+    const exp = issuedNonces.get(nonce);
+    if (exp == null) return false;
+    issuedNonces.delete(nonce); // 無論後續驗證成敗都消耗，失敗的 nonce 不可重試
+    return exp > Date.now();
+  };
+
   app.post("/sdjwt/nonce", (_req, res) => {
+    sweepNonces();
+    if (issuedNonces.size >= NONCE_MAX) {
+      return res.status(429).json({ error: "too_many_pending_nonces" });
+    }
     const nonce = randomUUID();
-    issuedNonces.add(nonce);
+    issuedNonces.set(nonce, Date.now() + NONCE_TTL_MS);
     res.json({ nonce, aud: VERIFIER_AUD });
   });
 
-  // 【LEGACY，僅供 e2e 腳本】伺服器代簽 KB 的出示。
-  // 錢包已改為瀏覽器端本機金鑰簽 KB（packages/wallet/src/keys.ts），此端點不再被前端使用。
-  app.post("/sdjwt/present", async (req, res) => {
-    try {
-      const { vc, holderDid, revealKeys, aud, nonce } = req.body ?? {};
-      if (!vc || !holderDid) return res.status(400).json({ error: "缺 vc 或 holderDid" });
-      const holder = await agent.didManagerGet({ did: holderDid });
-      const presentation = await presentKycWithKeyBinding(
-        agent,
-        holder,
-        vc,
-        revealKeys ?? ["kycLevel"],
-        { aud: aud ?? VERIFIER_AUD, nonce: nonce ?? "" }
-      );
-      res.json({ presentation });
-    } catch (e: any) {
-      serverError(res, e);
-    }
-  });
+  // 【LEGACY，預設關閉】伺服器代簽 KB 的出示。
+  //
+  // 這是一台簽章機：接受任意 holderDid/vc/aud/nonce，用伺服器持有的私鑰簽 KB-JWT。
+  // 未鑑權開放時，任何人只要知道一個伺服器代管的 holder DID，就能對任何驗證方
+  // 索取合法 KB-JWT —— 正好把 key binding 要防的「出示被轉手」還原回去。
+  // 錢包已改為瀏覽器端本機金鑰簽 KB（packages/wallet/src/keys.ts），前端不再使用此端點。
+  if (config.enableLegacyPresent) {
+    console.warn(
+      "[issuer-verifier] ENABLE_LEGACY_PRESENT=1：/sdjwt/present 已啟用（伺服器代簽），僅供 e2e，勿用於正式環境"
+    );
+    app.post("/sdjwt/present", requireApiKey, async (req, res) => {
+      try {
+        const { vc, holderDid, revealKeys, aud, nonce } = req.body ?? {};
+        if (!vc || !holderDid) return res.status(400).json({ error: "缺 vc 或 holderDid" });
+        const holder = await agent.didManagerGet({ did: holderDid });
+        const presentation = await presentKycWithKeyBinding(
+          agent,
+          holder,
+          vc,
+          revealKeys ?? ["kycLevel"],
+          { aud: aud ?? VERIFIER_AUD, nonce: nonce ?? "" }
+        );
+        res.json({ presentation });
+      } catch (e: any) {
+        serverError(res, e);
+      }
+    });
+  }
 
   // 驗證 SD-JWT 出示（含 key binding）+ AI 風險評分 → 綜合 outcome
   app.post("/sdjwt/verify", async (req, res) => {
     try {
-      const { presentation, tx, kind, requireKeyBinding, expectedNonce } = req.body ?? {};
-      if (!presentation) return res.status(400).json({ error: "缺 presentation" });
-      // 若帶 expectedNonce，驗其為本方核發且未用過（一次性）
-      if (expectedNonce != null && !issuedNonces.has(expectedNonce)) {
+      const { presentation, tx, kind } = req.body ?? {};
+      if (typeof presentation !== "string" || presentation.length === 0) {
+        return res.status(400).json({ error: "缺 presentation（需為字串）" });
+      }
+      if (kind != null && kind !== "kyc" && kind !== "reputation") {
+        return res.status(400).json({ error: "kind 僅接受 kyc 或 reputation" });
+      }
+      // nonce 為必要項且必須是本方核發、未過期、未用過。
+      //
+      // 舊版把 requireKeyBinding / expectedNonce / expectedAud 交給 request body 決定：
+      // 攻擊者只要不傳這些欄位，KB 必驗與 nonce 防重放就整段被跳過，
+      // 任何側錄到的出示都能無限重放。驗證政策現在完全由伺服器決定。
+      const nonce = (req.body ?? {}).nonce;
+      if (!consumeNonce(nonce)) {
         return res.json({
-          verify: { ok: false, checks: {}, disclosed: [], withheld: [], reason: "nonce 無效或已使用" },
+          verify: { ok: false, checks: {}, disclosed: [], withheld: [], reason: "nonce 無效、已過期或已使用" },
           outcome: "reject",
         });
       }
-      const kbOpts = {
-        requireKeyBinding: requireKeyBinding === true,
-        expectedAud: requireKeyBinding === true ? VERIFIER_AUD : undefined,
-        expectedNonce: expectedNonce ?? undefined,
-      };
+      const kbOpts = { expectedAud: VERIFIER_AUD, expectedNonce: nonce as string };
       // kind=reputation → 普惠信譽述詞（reputationTier>=2）；預設 KYC 述詞（kycLevel>=2）
       const verify =
         kind === "reputation"
           ? await verifyReputationSdJwtPresentation(chain, presentation, { minTier: 2, ...kbOpts })
           : await verifyKycSdJwtPresentation(chain, presentation, { minKycLevel: 2, ...kbOpts });
-      if (verify.ok && expectedNonce != null) issuedNonces.delete(expectedNonce); // 消耗 nonce
       let risk;
       let outcome: "approve" | "review" | "reject" = "reject";
       if (verify.ok) {
@@ -277,7 +346,9 @@ async function main() {
   app.post("/revoke", requireApiKey, async (req, res) => {
     try {
       const { revocationKey } = req.body ?? {};
-      if (!revocationKey) return res.status(400).json({ error: "缺 revocationKey" });
+      if (typeof revocationKey !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(revocationKey)) {
+        return res.status(400).json({ error: "revocationKey 需為 0x 開頭的 bytes32" });
+      }
       await chain.revoke(revocationKey);
       res.json({ revoked: true, revocationKey });
     } catch (e: any) {
@@ -290,7 +361,9 @@ async function main() {
     console.log(`[issuer-verifier] chainMode=${config.chainMode} issuer=${issuer.did}`);
     console.log(`[issuer-verifier] CORS=${config.corsOrigin}`);
     if (!config.apiKey) {
-      console.warn("[issuer-verifier] ⚠ 未設 API_KEY：mutating 端點未保護（dev 模式）。正式請設 .env API_KEY");
+      console.warn(
+        "[issuer-verifier] ⚠ 未設 API_KEY：簽發/撤銷端點一律回 503（fail-closed）。請設 .env API_KEY 才能使用"
+      );
     }
   });
 }

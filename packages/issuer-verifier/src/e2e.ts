@@ -19,7 +19,6 @@ import { verifyCredential } from "./verifier.js";
 import {
   issueKycSdJwt,
   issueReputationSdJwt,
-  presentKycMinimal,
   presentKycWithKeyBinding,
   verifyKycSdJwtPresentation,
   verifyReputationSdJwtPresentation,
@@ -43,8 +42,8 @@ function assert(cond: boolean, msg: string) {
 
 function makeChain(): ChainGateway {
   if (config.chainMode === "ethers") {
-    const dep = loadDeployment("amoy");
-    if (!dep) throw new Error("CHAIN_MODE=ethers 但找不到 deployments/amoy.json，請先部署合約");
+    const dep = loadDeployment(config.deploymentNetwork);
+    if (!dep) throw new Error(`CHAIN_MODE=ethers 但找不到 deployments/${config.deploymentNetwork}.json，請先部署合約`);
     return new EthersChainGateway({
       rpcUrl: config.amoyRpcUrl,
       issuerRegistry: dep.contracts.IssuerRegistry,
@@ -75,6 +74,8 @@ async function main() {
   line(`    CHT PublicCA 背書：${anchor.anchored}（${anchor.rootAuthority}）`);
   await chain.setTrustedIssuer(issuerAddr, true);
   assert(await chain.isTrustedIssuer(issuerAddr), "IssuerRegistry 已信任此 Issuer");
+  // 記憶體閘道鏡射合約的 issuer 命名空間，需指定撤銷者身分（等同 msg.sender）
+  if (chain instanceof InMemoryChainGateway) chain.setRevokeAs(issuerAddr);
 
   // 2) 簽發 + 驗證通過
   line(`\n[2] 簽發 KYCCredential…`);
@@ -94,7 +95,7 @@ async function main() {
   const key = revocationKeyOf(vc);
   line(`    撤銷鍵 = ${key}`);
   await chain.revoke(key);
-  assert(await chain.isRevoked(key), "RevocationRegistry 顯示已撤銷");
+  assert(await chain.isRevoked(issuerAddr, key), "RevocationRegistry 顯示已撤銷");
   const r2 = await verifyCredential(agent, chain, vc);
   line(`    驗證結果：${JSON.stringify(r2.checks)}（reason: ${r2.reason}）`);
   assert(r2.ok === false, "撤銷後驗證失敗 (ok=false)");
@@ -124,8 +125,16 @@ async function main() {
   line(`[5] 簽發 SD-JWT KYCCredential（${sdVc.split("~").length - 2} 個可選擇揭露欄位）`);
 
   // Holder 只揭露 kycLevel（供「kycLevel>=2」述詞），其餘 PII 不洩
-  const pres = await presentKycMinimal(sdVc, ["kycLevel"]);
-  const sd1 = await verifyKycSdJwtPresentation(chain, pres, { minKycLevel: 2 });
+  const E2E_AUD = config.verifierAud;
+  const pres = await presentKycWithKeyBinding(agent, holder, sdVc, ["kycLevel"], {
+    aud: E2E_AUD,
+    nonce: "e2e-nonce-min",
+  });
+  const sd1 = await verifyKycSdJwtPresentation(chain, pres, {
+    minKycLevel: 2,
+    expectedAud: E2E_AUD,
+    expectedNonce: "e2e-nonce-min",
+  });
   line(`    實際揭露欄位：[${sd1.disclosed.join(", ")}]`);
   line(`    未揭露(隱藏)欄位：[${sd1.withheld.join(", ")}]`);
   line(`    出示內容 payload keys：[${Object.keys(sd1.payload ?? {}).join(", ")}]`);
@@ -142,7 +151,11 @@ async function main() {
   line(`\n[6] 撤銷 SD-JWT VC…`);
   const sdKey = (sd1.payload as any).credentialStatus.revocationKey;
   await chain.revoke(sdKey);
-  const sd2 = await verifyKycSdJwtPresentation(chain, pres, { minKycLevel: 2 });
+  const sd2 = await verifyKycSdJwtPresentation(chain, pres, {
+    minKycLevel: 2,
+    expectedAud: E2E_AUD,
+    expectedNonce: "e2e-nonce-min",
+  });
   line(`    驗證結果：${JSON.stringify(sd2.checks)}（reason: ${sd2.reason}）`);
   assert(sd2.ok === false && sd2.checks.notRevoked === false, "撤銷後 SD-JWT 出示驗證失敗");
 
@@ -154,7 +167,7 @@ async function main() {
   line(`[7] 持有者以私鑰簽 KB-JWT 出示（aud=${AUD}）`);
   const kbPres = await presentKycWithKeyBinding(agent, holder, kbVc, ["kycLevel"], { aud: AUD, nonce: NONCE });
   const kb1 = await verifyKycSdJwtPresentation(chain, kbPres, {
-    requireKeyBinding: true, expectedAud: AUD, expectedNonce: NONCE,
+    expectedAud: AUD, expectedNonce: NONCE,
   });
   line(`    驗證結果：${JSON.stringify(kb1.checks)}`);
   assert(kb1.ok === true && kb1.checks.keyBinding === true, "持有者 KB 出示驗證通過");
@@ -163,7 +176,7 @@ async function main() {
   const attacker = await createHolderDid(agent, "attacker");
   const evilPres = await presentKycWithKeyBinding(agent, attacker, kbVc, ["kycLevel"], { aud: AUD, nonce: NONCE });
   const kb2 = await verifyKycSdJwtPresentation(chain, evilPres, {
-    requireKeyBinding: true, expectedAud: AUD, expectedNonce: NONCE,
+    expectedAud: AUD, expectedNonce: NONCE,
   });
   line(`    驗證結果：${JSON.stringify(kb2.checks)}（reason: ${kb2.reason}）`);
   assert(kb2.ok === false && kb2.checks.keyBinding === false, "轉手出示（他人私鑰）被擋下");
@@ -172,8 +185,15 @@ async function main() {
   line(`\n=== 普惠金融 FinancialReputationCredential ===`);
   line(`[9] 以電信繳費紀錄簽發信譽 VC（無聯徵者的替代信用）…`);
   const repVc = await issueReputationSdJwt({ issuer, holderDid: holder.did }, agent);
-  const repPres = await presentKycMinimal(repVc, ["reputationTier"]);
-  const rep = await verifyReputationSdJwtPresentation(chain, repPres, { minTier: 2 });
+  const repPres = await presentKycWithKeyBinding(agent, holder, repVc, ["reputationTier"], {
+    aud: E2E_AUD,
+    nonce: "e2e-nonce-rep",
+  });
+  const rep = await verifyReputationSdJwtPresentation(chain, repPres, {
+    minTier: 2,
+    expectedAud: E2E_AUD,
+    expectedNonce: "e2e-nonce-rep",
+  });
   line(`    實際揭露欄位：[${rep.disclosed.join(", ")}]`);
   line(`    未揭露(隱藏)欄位：[${rep.withheld.join(", ")}]`);
   line(`    驗證結果：${JSON.stringify(rep.checks)}`);
@@ -195,8 +215,15 @@ async function main() {
     },
     agent
   );
-  const lowPres = await presentKycMinimal(lowVc, ["reputationTier"]);
-  const low = await verifyReputationSdJwtPresentation(chain, lowPres, { minTier: 2 });
+  const lowPres = await presentKycWithKeyBinding(agent, holder, lowVc, ["reputationTier"], {
+    aud: E2E_AUD,
+    nonce: "e2e-nonce-low",
+  });
+  const low = await verifyReputationSdJwtPresentation(chain, lowPres, {
+    minTier: 2,
+    expectedAud: E2E_AUD,
+    expectedNonce: "e2e-nonce-low",
+  });
   line(`    驗證結果：${JSON.stringify(low.checks)}（reason: ${low.reason}）`);
   assert(low.ok === false && low.checks.predicate === false, "信譽等級不足被述詞擋下");
 

@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
+
+const T_AUD = "chaintrust-verifier";
+const T_NONCE = "test-nonce";
 import {
   createVeramoAgent,
   createIssuerDid,
@@ -31,6 +34,7 @@ describe("SD-JWT 選擇性揭露 (M2.0)", () => {
     holder = await createHolderDid(agent);
     chain = new InMemoryChainGateway();
     await chain.setTrustedIssuer(issuerAddressFromIdentifier(issuer), true);
+    chain.setRevokeAs(issuerAddressFromIdentifier(issuer));
   });
 
   async function freshVc() {
@@ -46,8 +50,8 @@ describe("SD-JWT 選擇性揭露 (M2.0)", () => {
 
   it("最小揭露：只揭露 kycLevel，其餘 PII 不存在於出示內容", async () => {
     const vc = await freshVc();
-    const pres = await presentKycMinimal(vc, ["kycLevel"]);
-    const r = await verifyKycSdJwtPresentation(chain, pres, { minKycLevel: 2 });
+    const pres = await presentKycWithKeyBinding(agent, holder, vc, ["kycLevel"], { aud: T_AUD, nonce: T_NONCE });
+    const r = await verifyKycSdJwtPresentation(chain, pres, { minKycLevel: 2, expectedAud: T_AUD, expectedNonce: T_NONCE });
 
     expect(r.ok).toBe(true);
     expect(r.disclosed).toEqual(["kycLevel"]);
@@ -61,26 +65,29 @@ describe("SD-JWT 選擇性揭露 (M2.0)", () => {
       trustedIssuer: true,
       notRevoked: true,
       predicate: true,
+      credentialType: true,
+      notExpired: true,
+      keyBinding: true,
     });
   });
 
   it("withheld 清單涵蓋所有未揭露的 SD claim", async () => {
     const vc = await freshVc();
-    const pres = await presentKycMinimal(vc, ["kycLevel"]);
-    const r = await verifyKycSdJwtPresentation(chain, pres);
+    const pres = await presentKycWithKeyBinding(agent, holder, vc, ["kycLevel"], { aud: T_AUD, nonce: T_NONCE });
+    const r = await verifyKycSdJwtPresentation(chain, pres, { expectedAud: T_AUD, expectedNonce: T_NONCE });
     const expectedWithheld = KYC_SD_CLAIMS.filter((k) => k !== "kycLevel");
     expect(r.withheld.sort()).toEqual([...expectedWithheld].sort());
   });
 
   it("撤銷後 SD-JWT 出示驗證失敗 (notRevoked=false)", async () => {
     const vc = await freshVc();
-    const pres = await presentKycMinimal(vc, ["kycLevel"]);
-    const ok = await verifyKycSdJwtPresentation(chain, pres, { minKycLevel: 2 });
+    const pres = await presentKycWithKeyBinding(agent, holder, vc, ["kycLevel"], { aud: T_AUD, nonce: T_NONCE });
+    const ok = await verifyKycSdJwtPresentation(chain, pres, { minKycLevel: 2, expectedAud: T_AUD, expectedNonce: T_NONCE });
     expect(ok.ok).toBe(true);
 
     const key = (ok.payload as any).credentialStatus.revocationKey;
     await chain.revoke(key);
-    const r = await verifyKycSdJwtPresentation(chain, pres, { minKycLevel: 2 });
+    const r = await verifyKycSdJwtPresentation(chain, pres, { minKycLevel: 2, expectedAud: T_AUD, expectedNonce: T_NONCE });
     expect(r.ok).toBe(false);
     expect(r.checks.notRevoked).toBe(false);
   });
@@ -88,8 +95,8 @@ describe("SD-JWT 選擇性揭露 (M2.0)", () => {
   it("述詞不滿足：未揭露 kycLevel → predicate=false", async () => {
     const vc = await freshVc();
     // 不揭露任何 SD claim
-    const pres = await presentKycMinimal(vc, []);
-    const r = await verifyKycSdJwtPresentation(chain, pres, { minKycLevel: 2 });
+    const pres = await presentKycWithKeyBinding(agent, holder, vc, [], { aud: T_AUD, nonce: T_NONCE });
+    const r = await verifyKycSdJwtPresentation(chain, pres, { minKycLevel: 2, expectedAud: T_AUD, expectedNonce: T_NONCE });
     expect(r.ok).toBe(false);
     expect(r.checks.predicate).toBe(false);
     expect(r.disclosed).toEqual([]);
@@ -108,6 +115,7 @@ describe("FinancialReputationCredential 普惠信譽 (SD-JWT)", () => {
     holder = await createHolderDid(agent);
     chain = new InMemoryChainGateway();
     await chain.setTrustedIssuer(issuerAddressFromIdentifier(issuer), true);
+    chain.setRevokeAs(issuerAddressFromIdentifier(issuer));
   });
 
   it("tier 規則：多年準時繳費=3；一年以上尚可=2；否則=1", () => {
@@ -125,8 +133,8 @@ describe("FinancialReputationCredential 普惠信譽 (SD-JWT)", () => {
 
   it("最小揭露：只揭露 reputationTier，繳費明細不存在於出示內容", async () => {
     const vc = await issueReputationSdJwt({ issuer, holderDid: holder.did }, agent);
-    const pres = await presentKycMinimal(vc, ["reputationTier"]);
-    const r = await verifyReputationSdJwtPresentation(chain, pres, { minTier: 2 });
+    const pres = await presentKycWithKeyBinding(agent, holder, vc, ["reputationTier"], { aud: T_AUD, nonce: T_NONCE });
+    const r = await verifyReputationSdJwtPresentation(chain, pres, { minTier: 2, expectedAud: T_AUD, expectedNonce: T_NONCE });
 
     expect(r.ok).toBe(true);
     expect(r.disclosed).toEqual(["reputationTier"]);
@@ -139,13 +147,16 @@ describe("FinancialReputationCredential 普惠信譽 (SD-JWT)", () => {
       trustedIssuer: true,
       notRevoked: true,
       predicate: true,
+      credentialType: true,
+      notExpired: true,
+      keyBinding: true,
     });
   });
 
   it("withheld 清單涵蓋所有未揭露的信譽 SD claim", async () => {
     const vc = await issueReputationSdJwt({ issuer, holderDid: holder.did }, agent);
-    const pres = await presentKycMinimal(vc, ["reputationTier"]);
-    const r = await verifyReputationSdJwtPresentation(chain, pres);
+    const pres = await presentKycWithKeyBinding(agent, holder, vc, ["reputationTier"], { aud: T_AUD, nonce: T_NONCE });
+    const r = await verifyReputationSdJwtPresentation(chain, pres, { expectedAud: T_AUD, expectedNonce: T_NONCE });
     const expectedWithheld = REPUTATION_SD_CLAIMS.filter((k) => k !== "reputationTier");
     expect(r.withheld.sort()).toEqual([...expectedWithheld].sort());
   });
@@ -165,8 +176,8 @@ describe("FinancialReputationCredential 普惠信譽 (SD-JWT)", () => {
       },
       agent
     );
-    const pres = await presentKycMinimal(vc, ["reputationTier"]);
-    const r = await verifyReputationSdJwtPresentation(chain, pres, { minTier: 2 });
+    const pres = await presentKycWithKeyBinding(agent, holder, vc, ["reputationTier"], { aud: T_AUD, nonce: T_NONCE });
+    const r = await verifyReputationSdJwtPresentation(chain, pres, { minTier: 2, expectedAud: T_AUD, expectedNonce: T_NONCE });
     expect(r.ok).toBe(false);
     expect(r.checks.predicate).toBe(false);
     expect(r.reason).toMatch(/reputationTier/);
@@ -174,13 +185,13 @@ describe("FinancialReputationCredential 普惠信譽 (SD-JWT)", () => {
 
   it("撤銷後信譽出示驗證失敗 (notRevoked=false)", async () => {
     const vc = await issueReputationSdJwt({ issuer, holderDid: holder.did }, agent);
-    const pres = await presentKycMinimal(vc, ["reputationTier"]);
-    const ok = await verifyReputationSdJwtPresentation(chain, pres);
+    const pres = await presentKycWithKeyBinding(agent, holder, vc, ["reputationTier"], { aud: T_AUD, nonce: T_NONCE });
+    const ok = await verifyReputationSdJwtPresentation(chain, pres, { expectedAud: T_AUD, expectedNonce: T_NONCE });
     expect(ok.ok).toBe(true);
 
     const key = (ok.payload as any).credentialStatus.revocationKey;
     await chain.revoke(key);
-    const r = await verifyReputationSdJwtPresentation(chain, pres);
+    const r = await verifyReputationSdJwtPresentation(chain, pres, { expectedAud: T_AUD, expectedNonce: T_NONCE });
     expect(r.ok).toBe(false);
     expect(r.checks.notRevoked).toBe(false);
   });
@@ -201,6 +212,7 @@ describe("SD-JWT key binding (階段 B)", () => {
     holder = await createHolderDid(agent);
     chain = new InMemoryChainGateway();
     await chain.setTrustedIssuer(issuerAddressFromIdentifier(issuer), true);
+    chain.setRevokeAs(issuerAddressFromIdentifier(issuer));
   });
 
   async function freshVc() {
@@ -211,7 +223,6 @@ describe("SD-JWT key binding (階段 B)", () => {
     const vc = await freshVc();
     const pres = await presentKycWithKeyBinding(agent, holder, vc, ["kycLevel"], { aud: AUD, nonce: NONCE });
     const r = await verifyKycSdJwtPresentation(chain, pres, {
-      requireKeyBinding: true,
       expectedAud: AUD,
       expectedNonce: NONCE,
     });
@@ -225,7 +236,6 @@ describe("SD-JWT key binding (階段 B)", () => {
     // 攻擊者攔截 VC 後用自己的私鑰簽 KB
     const pres = await presentKycWithKeyBinding(agent, attacker, vc, ["kycLevel"], { aud: AUD, nonce: NONCE });
     const r = await verifyKycSdJwtPresentation(chain, pres, {
-      requireKeyBinding: true,
       expectedAud: AUD,
       expectedNonce: NONCE,
     });
@@ -238,7 +248,6 @@ describe("SD-JWT key binding (階段 B)", () => {
     const vc = await freshVc();
     const pres = await presentKycWithKeyBinding(agent, holder, vc, ["kycLevel"], { aud: AUD, nonce: NONCE });
     const r = await verifyKycSdJwtPresentation(chain, pres, {
-      requireKeyBinding: true,
       expectedAud: AUD,
       expectedNonce: "different-nonce",
     });
@@ -251,7 +260,6 @@ describe("SD-JWT key binding (階段 B)", () => {
     const vc = await freshVc();
     const pres = await presentKycWithKeyBinding(agent, holder, vc, ["kycLevel"], { aud: "other-bank", nonce: NONCE });
     const r = await verifyKycSdJwtPresentation(chain, pres, {
-      requireKeyBinding: true,
       expectedAud: AUD,
       expectedNonce: NONCE,
     });
@@ -262,8 +270,8 @@ describe("SD-JWT key binding (階段 B)", () => {
 
   it("負向：要求 KB 但出示無 KB → 失敗", async () => {
     const vc = await freshVc();
-    const pres = await presentKycMinimal(vc, ["kycLevel"]); // 無 KB
-    const r = await verifyKycSdJwtPresentation(chain, pres, { requireKeyBinding: true, expectedAud: AUD });
+    const pres = await presentKycWithKeyBinding(agent, holder, vc, ["kycLevel"], { aud: T_AUD, nonce: T_NONCE }); // 無 KB
+    const r = await verifyKycSdJwtPresentation(chain, pres, { expectedAud: AUD, expectedNonce: NONCE });
     expect(r.ok).toBe(false);
     expect(r.checks.keyBinding).toBe(false);
   });

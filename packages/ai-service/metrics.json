@@ -11,6 +11,12 @@
   "precision_at_100": 0.99,
   "mcc": 0.9023,
   "threshold": 0.05,
+  "threshold_selection": {
+    "method": "(stale) max-F1 over np.linspace(0.05, 0.95, 91) grid",
+    "note": "0.05 正好是舊網格的下界 → 真正的最佳門檻可能更低卻被網格擋住，此值是人為邊界而非最佳解。train.py 已改為由驗證集 PR 曲線直接求 F1 最大點，需重跑 `pnpm ai:train` 才會反映到本檔。",
+    "applies_to": "p_fraud（校準後機率），非服務端回傳的混合 risk 分數",
+    "stale": true
+  },
   "recall_at_threshold": 0.8501,
   "confusion_at_threshold": {
     "tp": 482,
@@ -64,7 +70,32 @@
       "cross_institution_presentations",
       "payee_risk",
       "geo_jump"
-    ]
+    ],
+    "evidence_grade": "simulation",
+    "label_conditioned": true,
+    "caveat": "label-conditioned synthetic signals; not evidence of real-world lift",
+    "caveat_zh": "這 9 個 CHT 欄位由 synth.py 以 isFraud 標籤為條件生成（詐欺列與正常列從兩組不同分佈抽樣）。消融量到的 +16.45% 反映的是我們注入了多少標籤資訊，屬循環論證，不能當作中華電信訊號在真實世界的效益證據。",
+    "data_provenance": {
+      "mode": "fully_synthetic",
+      "label_conditioned": true,
+      "evidence_grade": "simulation",
+      "note": "整份資料由 synth.py::generate() 產生：先決定每列是正常/詐欺 A/B/C，再依該類分佈抽特徵並硬寫 isFraud（尾端另做 ~1.5% 隨機標籤翻轉）。特徵與標籤的關聯強度是設定出來的參數，非真實世界觀測。"
+    }
+  },
+  "data_honesty": {
+    "synthetic_only": true,
+    "evidence_grade": "simulation",
+    "label_generation": "synth.py::generate() 先決定每列類別（正常/詐欺 A/B/C）再依該類分佈抽特徵、硬寫 isFraud 為 0/1；唯一標籤隨機性是尾端 ~1.5% 隨機翻轉。並非「潛在風險 logit + Bernoulli 抽樣」。",
+    "extrapolation": "synthetic-only：本檔所有指標僅描述這份合成資料上的表現，不可外推至真實金融交易分佈，亦不可作為上線效益承諾。",
+    "no_real_world_validation": true
+  },
+  "risk_score_composition": {
+    "serving_formula": "risk = round(100 * (0.7 * p_fraud + 0.3 * anomaly_norm))",
+    "metrics_computed_on": "p_fraud（校準後 LightGBM 機率）",
+    "decision_thresholds_applied_to": "混合 risk 分數（app/model.py::decide()：<40 pass、40-69 review、>=70 block）",
+    "gap": "本檔上方的 PR-AUC / ROC-AUC / ECE / Brier / threshold 都算在 p_fraud 上，但服務端拿來做決策的是混合分數；IsolationForest 那 30% 未被上方指標與校準涵蓋。重跑 `pnpm ai:train` 後此區塊會補上 blended_risk_evaluation（混合分數的直接評估）。",
+    "blended_risk_evaluation": null,
+    "stale": "本檔為 train.py 修改前產出，尚未含混合分數評估數字；需重跑 `pnpm ai:train` 才會填入。"
   },
   "split": "out-of-time (by step)",
   "top_feature_importances": [

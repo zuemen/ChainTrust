@@ -79,21 +79,22 @@ async function main() {
   const testHash = ethers.keccak256(ethers.toUtf8Bytes(`smoke-${Date.now()}`));
   console.log(`[smoke] 測試 credentialHash = ${testHash}`);
 
+  // 撤銷狀態以 issuer 命名空間隔離，查詢一律帶上簽發者位址（此處 = signer）
   const txRevoke = await revocationRegistry.revoke(testHash);
   await txRevoke.wait();
   console.log(`[smoke] revoke    ✔  ${txLink(txRevoke.hash)}`);
-  if (!(await revocationRegistry.isRevoked(testHash))) {
+  if (!(await revocationRegistry.isRevoked(signer.address, testHash))) {
     throw new Error("smoke 失敗：revoke 後 isRevoked 應為 true");
   }
-  console.log(`[smoke] isRevoked = true  ✔`);
+  console.log(`[smoke] isRevoked(signer, hash) = true  ✔`);
 
   const txUnrevoke = await revocationRegistry.unrevoke(testHash);
   await txUnrevoke.wait();
   console.log(`[smoke] unrevoke  ✔  ${txLink(txUnrevoke.hash)}`);
-  if (await revocationRegistry.isRevoked(testHash)) {
+  if (await revocationRegistry.isRevoked(signer.address, testHash)) {
     throw new Error("smoke 失敗：unrevoke 後 isRevoked 應為 false");
   }
-  console.log(`[smoke] isRevoked = false ✔`);
+  console.log(`[smoke] isRevoked(signer, hash) = false ✔`);
 
   console.log(`\n✅ Amoy 煙霧測試通過。上述 PolygonScan 連結即為「真的在鏈上」的事證。`);
 }

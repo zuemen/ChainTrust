@@ -88,6 +88,7 @@ describe("瀏覽器端持有者金鑰（金鑰自主）× 伺服器 KB 驗證", 
     chain = new InMemoryChainGateway();
     issuer = await createIssuerDid(agent);
     await chain.setTrustedIssuer(issuerAddressFromIdentifier(issuer), true);
+    chain.setRevokeAs(issuerAddressFromIdentifier(issuer));
 
     // 「瀏覽器」自行生成金鑰與 DID——伺服器 agent 從頭到尾沒有這把私鑰
     holderSk = new SigningKey("0x" + randomBytes(32).toString("hex"));
@@ -112,7 +113,6 @@ describe("瀏覽器端持有者金鑰（金鑰自主）× 伺服器 KB 驗證", 
 
     const r = await verifyKycSdJwtPresentation(chain, presentation, {
       minKycLevel: 2,
-      requireKeyBinding: true,
       expectedAud: aud,
       expectedNonce: nonce,
     });

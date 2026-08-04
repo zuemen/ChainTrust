@@ -22,6 +22,7 @@ describe("ChainTrust issuer/verifier 流程", () => {
     holder = await createHolderDid(agent);
     chain = new InMemoryChainGateway();
     await chain.setTrustedIssuer(issuerAddressFromIdentifier(issuer), true);
+    chain.setRevokeAs(issuerAddressFromIdentifier(issuer));
   });
 
   it("verifier 由 did:key 推導的位址與 issuer identifier 一致", () => {

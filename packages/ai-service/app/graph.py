@@ -93,7 +93,13 @@ def add_graph_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def graph_features_for_row(row: Mapping, graph: AccountGraph | None) -> dict[str, float]:
-    """/score 用：若有 graph 與帳戶名則回傳特徵，否則 0（讓單筆查詢也能帶圖譜訊號）。"""
+    """/score 用：若有 graph 與帳戶名則回傳特徵，否則沿用 row 帶進來的值。
+
+    現況（2026-08-04）：`app/main.py` **沒有**呼叫這個函式——服務端沒有常駐的帳戶圖譜，
+    `payee_fan_in` / `account_graph_risk` 改由呼叫端（issuer-verifier / 錢包）自行從
+    圖譜服務查得後放進 `ScoreRequest`，`featurize()` 直接讀 row（等同這裡 `graph is None` 的分支）。
+    保留本函式是為了日後服務端若載入常駐圖譜時可直接接上；在那之前它不在 /score 路徑上。
+    """
     if graph is None:
         return {"payee_fan_in": float(row.get("payee_fan_in", 0) or 0),
                 "account_graph_risk": float(row.get("account_graph_risk", 0) or 0)}

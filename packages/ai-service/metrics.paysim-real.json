@@ -64,7 +64,31 @@
       "cross_institution_presentations",
       "payee_risk",
       "geo_jump"
-    ]
+    ],
+    "evidence_grade": "simulation",
+    "label_conditioned": true,
+    "caveat": "label-conditioned synthetic signals; not evidence of real-world lift",
+    "caveat_zh": "PaySim 本身沒有電信/裝置/地理欄位，這 9 個 CHT 欄位是由 synth.py::augment_cht_signals() 以 isFraud 為條件注入的模擬值。此處 lift_pct=-0.1 之所以接近 0，是因為 PaySim 的餘額欄位已近乎決定性地標記詐欺、模型不需要額外訊號，而非證明 CHT 訊號無效——正反兩個方向都不能從這裡外推。",
+    "data_provenance": {
+      "mode": "label_conditioned_simulation",
+      "label_conditioned": true,
+      "evidence_grade": "simulation",
+      "note": "交易/餘額欄位來自真 PaySim；CHT 欄位為以 isFraud 為條件的模擬注入（結構性標籤洩漏）。train.py 現已預設關閉此路徑（需 CHT_LABEL_CONDITIONED_SIM=1 才啟用），改以標籤無關的中性值補齊。"
+    }
+  },
+  "data_honesty": {
+    "synthetic_only": false,
+    "evidence_grade": "simulation",
+    "note": "半合成：金流欄位為真 PaySim，CHT 欄位為標籤條件模擬。此檔為 2026-07-02 實測後主動棄用的版本（見 docs/model-card.md §2.2），指標飽和（PR-AUC 0.998、ROC≈1.0）源自 PaySim 模擬器 artifact，非真實泛化能力。",
+    "no_real_world_validation": true
+  },
+  "risk_score_composition": {
+    "serving_formula": "risk = round(100 * (0.7 * p_fraud + 0.3 * anomaly_norm))",
+    "metrics_computed_on": "p_fraud（校準後 LightGBM 機率）",
+    "decision_thresholds_applied_to": "混合 risk 分數（app/model.py::decide()：<40 pass、40-69 review、>=70 block）",
+    "gap": "本檔所有指標算在 p_fraud 上，服務端決策卻套在混合分數；IsolationForest 那 30% 未被涵蓋。本檔已棄用，不會重跑補算。",
+    "blended_risk_evaluation": null,
+    "stale": true
   },
   "split": "out-of-time (by step)",
   "top_feature_importances": [

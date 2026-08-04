@@ -16,8 +16,12 @@ app = FastAPI(title="ChainTrust AI 反詐服務", version="0.2.0")
 _METRICS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "metrics.json")
 
 # ── CORS：來源由 env ALLOWED_ORIGINS 控制（逗號分隔）。
-# 預設含本機錢包與所有 *.vercel.app 預覽/正式網域。含 "*" 的項目走 regex 比對。
-_DEFAULT_ORIGINS = "http://localhost:5173,https://*.vercel.app"
+# 預設「只有本機開發用來源」，**不含任何萬用網域**。
+# 先前預設含 `https://*.vercel.app`，等於放行任何人自行部署的 Vercel 專案；
+# 部署時請以 ALLOWED_ORIGINS 明列正式網域，例如：
+#   ALLOWED_ORIGINS="https://chaintrust-wallet.vercel.app,https://wallet.chaintrust.tw"
+# 仍支援 "*" 樣式（含 "*" 的項目走 regex 比對），但那是**明示選擇**、不再是預設值。
+_DEFAULT_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
 _origins_env = os.environ.get("ALLOWED_ORIGINS", _DEFAULT_ORIGINS)
 _exact: list[str] = []
 _patterns: list[str] = []

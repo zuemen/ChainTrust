@@ -99,7 +99,9 @@ def featurize(row: Mapping[str, Any]) -> dict[str, float]:
         "mobile_realname_verified": _num(row.get("mobile_realname_verified"), 1.0),
         "geo_jump": _num(row.get("geo_jump")),
         # A1
-        "amount_log": math.log1p(amount),
+        # H15 雙保險：log1p(x<0) 會丟 ValueError（x<-1）或回 NaN。schema 已擋負數，
+        # 但 featurize 也被 train.py / rules.py 直接呼叫（繞過 pydantic），故在此 clamp。
+        "amount_log": math.log1p(max(0.0, amount)),
         "drain_ratio": drain_ratio,
         "pass_through": pass_through,
         "near_threshold": near_threshold,

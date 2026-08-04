@@ -24,6 +24,21 @@
 
 另外注入約 1.5% 隨機標籤翻轉，刻意避免完美可分——`synth.py` docstring 明言 holdout PR-AUC 設計上落在 0.85–0.92 區間，不是 1.0。
 
+**標籤產生方式（更正，2026-08-04）**：`synth.py` 的舊 docstring 曾寫「標籤由潛在風險 logit + Bernoulli 抽樣產生」，**與實作不符**。實際上 `generate()` 是**先決定每一列屬於哪一類**（正常／詐欺 A／B／C），再依該類的分佈抽特徵、把 `isFraud` 硬寫成 0 或 1；沒有 logit，也沒有 Bernoulli 抽樣決定標籤。唯一的標籤隨機性是產生完之後對約 1.5% 的列做隨機翻轉。docstring 已改寫為與實作一致（不動實作邏輯，以免影響已 commit 的 `model.joblib`）。
+
+這代表：**特徵是以標籤為條件抽出來的（label-conditioned）**——特徵與標籤的關聯強度是我們自己設定的參數，不是從真實世界量到的。這是合成資料的常態，但也直接決定了 §4 消融結果的證據等級（見下）。
+
+### 2.3 CHT 增益欄位的來源（`augment_cht_signals`，重要）
+
+`synth.py::augment_cht_signals()` 會讀 `df["isFraud"]`，依標籤從兩組不同分佈抽出 9 個 CHT 訊號欄位（例如 `device_changed` 詐欺列 58%、正常列 8%）。真 PaySim 路徑先前**預設**套用此函式，等於把答案直接編碼進特徵——**結構性標籤洩漏**。
+
+修正（`train.py` / `synth.py`）：
+
+- `augment_cht_signals(df, *, allow_label_conditioning)` 新增**必填 keyword-only 參數**；忘記傳 → `TypeError`，傳 `False` → `ValueError`。呼叫端不可能再無意間把它套在真實資料上。
+- 新增 `fill_neutral_cht_signals()`：以**與標籤獨立**的分佈補齊缺少的欄位（期望增益為 0），這是真實資料缺欄位時的正確作法。
+- `train.py` 載入真 PaySim 時**預設走中性補值**；要跑舊的 demo 模擬必須明示環境變數 `CHT_LABEL_CONDITIONED_SIM=1`，且該路徑會在終端印出警告並在 `metrics.json` 標記 `evidence_grade: "simulation"`。
+- `metrics.json` 新增 `cht_signal_ablation.data_provenance` / `label_conditioned` / `evidence_grade` / `caveat`，讓「這些欄位哪來的」永遠隨指標一起流通。
+
 ### 2.2 真 PaySim 資料（已實測、主動棄用）
 
 2026-07-02 曾用 Kaggle `ealaxi/paysim1`（635 萬筆、詐欺 8,213 筆＝0.13%）實跑，結果存 `metrics.paysim-real.json`：PR-AUC 0.9978、ROC-AUC 0.9999。**判定不可用**：
@@ -37,8 +52,9 @@
 
 - **分類器**：`LightGBM`（`n_estimators=400, learning_rate=0.05, num_leaves=31, subsample=0.9, colsample_bytree=0.9, scale_pos_weight=neg/pos`），early stopping 50 輪（驗證集 AUC）。
 - **校準**：`CalibratedClassifierCV(..., method="isotonic")`，在驗證集上 fit，讓 `p_fraud` 是有意義的機率而非單純排序分數。
-- **異常分數**：`IsolationForest(n_estimators=200)`，只用正常樣本訓練，`contamination` 依實際詐欺率夾在 `[0.01, 0.2]`。
-- **最終風險分數**：`risk = round(100 × (0.7 × p_fraud + 0.3 × anomaly_norm))`（`app/model.py`）。
+- **異常分數**：`IsolationForest(n_estimators=200, contamination="auto")`，只用正常樣本訓練。（修正：先前設 `contamination=ytr.mean()`，即整體詐欺率，但實際只餵了 `Xtr[ytr == 0]`——訓練集按定義沒有污染，兩者自相矛盾。改為 `"auto"`。**需重跑 `pnpm ai:train` 才會反映到 `model.joblib`／`metrics.json`。**）
+- **最終風險分數**：`risk = round(100 × (0.7 × p_fraud + 0.3 × anomaly_norm))`（`app/model.py`）。**注意：本檔 §4 的所有指標與校準都算在 `p_fraud` 上，但決策門檻（40/70）是套在這個混合分數上——IsolationForest 貢獻的那 30% 不在上述指標的涵蓋範圍內。** 詳見 §5 限制第 8 點與 `metrics.json` 的 `risk_score_composition`。
+- **決策門檻選法**：以驗證集的 **PR 曲線直接求 F1 最大點**（`sklearn.precision_recall_curve`）。（修正：先前是 `np.linspace(0.05, 0.95, 91)` 固定網格，回報的最佳門檻 0.05 正好落在**網格下界**——那是人為邊界而不是最佳解。**需重跑 `pnpm ai:train`。**）
 - **切分方法**：依 `step`（時間序）做 out-of-time 切分（70/15/15 train/val/test），不 shuffle，避免時間洩漏。
 - **防洩漏措施**：帳戶圖譜特徵（`payee_fan_in`/`account_graph_risk`）只用**訓練期**的邊建圖，套用到 val/test 時不納入未來邊；`train.py` 對 ROC-AUC ≥ 0.999 會自動印警告（「極可能資料洩漏或過擬」）。
 - **特徵**（29 個，`app/featurize.py::FEATURE_ORDER`）：原始金流欄位（`amount`/餘額四項/`errorBalance*`）、交易類型 one-hot、速度（`tx_count_1h/24h`）、CHT 增益訊號（`device_changed`/`mobile_realname_verified`/`vc_age_days`/`account_age_days`/`cross_institution_presentations`/`payee_risk`/`geo_jump`）、工程特徵（`amount_log`/`drain_ratio`/`pass_through`/`near_threshold`/`round_amount`/`velocity_ratio`）、圖譜特徵（`payee_fan_in`/`account_graph_risk`）。
@@ -57,7 +73,13 @@
 | 決策門檻（best-F1 grid search） | 0.05 |
 | 混淆矩陣（門檻下） | TP 482 / FP 12 / FN 85 / TN 5421 |
 
-**CHT 增益訊號消融**（拿掉 `tx_count_*`/`device_changed`/`mobile_realname_verified`/`vc_age_days`/`account_age_days`/`cross_institution_presentations`/`payee_risk`/`geo_jump` 這 9 個訊號重訓）：PR-AUC 0.7394 → 0.8611，**+16.45%**。這是「一次 KYC、身分可攜」論點的量化證據。
+**CHT 增益訊號消融**（拿掉 `tx_count_*`/`device_changed`/`mobile_realname_verified`/`vc_age_days`/`account_age_days`/`cross_institution_presentations`/`payee_risk`/`geo_jump` 這 9 個訊號重訓）：PR-AUC 0.7394 → 0.8611，**+16.45%**。
+
+> ⚠️ **這個數字不是真實世界增益的證據，簡報引用時必須一併說明。**
+> 這 9 個欄位是 `synth.py` **以 `isFraud` 標籤為條件**生成的（詐欺列與正常列從兩組不同分佈抽樣，分佈差距由我們自己設定）。因此消融量到的 +16.45% 反映的是「**我們注入了多少標籤資訊**」，而不是中華電信訊號在真實金流中的價值——用注入標籤的特徵去證明該特徵有預測力，是循環論證。
+> `metrics.json` 已在 `cht_signal_ablation` 標記 `evidence_grade: "simulation"`、`label_conditioned: true`、`caveat: "label-conditioned synthetic signals; not evidence of real-world lift"`。
+> 這不是可修的 bug：要證明 CHT 訊號的真實增益，唯一辦法是取得**同時含真實金流與真實電信/裝置/地理訊號**的資料集，超出 PoC 範圍。目前可以誠實宣稱的是「架構上能吃這些訊號、且在我們設定的樣態下模型學得到」，**不能**宣稱「已驗證身分訊號帶來 +16.45% 反詐效益」。
+> 另註：`metrics.paysim-real.json` 的 `lift_pct = -0.1` 同樣不能反向解讀成「CHT 訊號無效」——那是因為 PaySim 的餘額欄位已近乎決定性地標記詐欺，模型不需要額外訊號（見 §2.2）。兩個方向都不可外推。
 
 **已知異常，需要在簡報上主動說明**：baseline 邏輯迴歸（PR-AUC 0.8732）在合成資料上贏過 LightGBM（0.8611）與規則 baseline（0.8362）。這**不是**「合成資料太假」的證據——真 PaySim 資料上 LR 與 LightGBM 幾乎同分（見 §2.2），說明這是 PaySim 資料家族本身金流訊號強度普遍偏線性可分，跟合成與否無關。維持 LightGBM 上線是為了模型架構要能捕捉「交互型」詐欺原型（單一特徵不觸發、組合才觸發），這類樣態邏輯迴歸原理上就抓不到，即使當前資料集上分數略低。
 
@@ -67,7 +89,11 @@
 2. **未經真實交易驗證**：模型從未在真實生產流量上跑過（PoC 階段無正式部署）。
 3. **PaySim 系真實資料不可用的結論範圍有限**：只驗證了「PaySim 模擬器」這個特定資料源不適合本專案的論點展示需求；不能推論成「所有真實金流資料都無法展現 CHT 訊號價值」——換一個真實資料源（如有機會取得 CHT/銀行的匿名化交易樣本）結論可能不同。
 4. **`payee_risk`/`account_graph_risk` 目前無真實資料源**：demo 情境靠手動指定或合成圖譜計算，落地需要真實的收款方風險評分/圖譜服務銜接。
-5. **決策門檻（40/70）未經真實成本效益校準**：目前是 best-F1 grid search 在合成驗證集上的結果，落地需要用真實誤判成本（false block 的客訴/流失成本 vs false pass 的詐欺損失）重新校準。
+5. **決策門檻（40/70）未經真實成本效益校準**：目前是在合成驗證集上取 F1 最大點的結果（已從固定網格改為 PR 曲線求解，見 §3），落地需要用真實誤判成本（false block 的客訴/流失成本 vs false pass 的詐欺損失）重新校準。
+6. **CHT 增益訊號是以標籤為條件模擬出來的，消融 lift 不具外部效度**（最重要的一條）：`synth.py::augment_cht_signals()` 直接讀 `isFraud` 生成那 9 個欄位，`metrics.json` 的 `cht_signal_ablation.lift_pct = 16.45` 因此是**循環論證的產物**，只證明「我們注入的標籤資訊被模型學到了」。已在程式（必填 `allow_label_conditioning` 參數、真實資料改走 `fill_neutral_cht_signals()`）與 `metrics.json`（`evidence_grade: "simulation"` + `caveat`）兩層加上護欄與標註，但**這個限制本身無法靠改程式消除**——需要真實含 CHT 訊號的資料集才能真正驗證。詳見 §2.3 與 §4。
+7. **本專案所有指標皆為 synthetic-only，不可外推**：`metrics.json` 新增 `data_honesty.synthetic_only = true` / `no_real_world_validation = true` / `extrapolation` 說明。PR-AUC 0.8611 描述的是「這份人工設計的合成資料上的表現」，不是對真實台灣金融交易的效能承諾。
+8. **服務端 `risk` 分數與評估指標不是同一個量**：`/score` 回傳並用於 pass/review/block 決策的是 `risk = 100 × (0.7 × p_fraud + 0.3 × anomaly_norm)`，但 §4 的 PR-AUC / ROC-AUC / ECE / Brier / 最佳門檻**全部算在 `p_fraud` 上**——IsolationForest 貢獻的 30% 既未被指標涵蓋、也未經校準（isotonic 只校準了 `p_fraud`）。也就是說「校準良好（ECE 0.001）」這個宣稱不適用於實際做決策的分數。`train.py` 已新增 `risk_score_composition.blended_risk_evaluation`，在 holdout 上直接評估混合分數（PR-AUC / ROC-AUC / 服務端 40 與 70 門檻下的 recall & precision），**需重跑 `pnpm ai:train` 才會出現在 `metrics.json`**；現行 `metrics.json` 中該欄位為 `null` 並標了 `stale`。
+9. **`payee_fan_in` / `account_graph_risk` 先前在服務端恆為 0（已修）**：`ScoreRequest` 沒有宣告這兩個欄位且設 `extra: "ignore"`，呼叫端帶了也會被 pydantic 丟棄——模型訓練時用了這兩個特徵、推論時卻永遠讀到 0（train/serve 偏移），`rules.py` 的 `FAN_IN_COLLECTION` / `MULE_RING` reason code 經 API 也永不觸發。已在 schema 補上欄位與界限驗證，並補了走 `TestClient` 的回歸測試（先前的測試直呼 `reason_codes(ctx)` 繞過 pydantic，綠燈掩蓋了問題）。**注意：目前的 `model.joblib` 是在「這兩個特徵有值」的資料上訓練的，修正後推論才真正對齊；但 demo 以外的呼叫端仍需自行接上圖譜服務才能提供真實值**（見第 4 點）。
 
 ## 6. 偏誤聲明
 

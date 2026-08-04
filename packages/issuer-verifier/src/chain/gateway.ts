@@ -15,7 +15,12 @@ import { fileURLToPath } from "url";
  */
 export interface ChainGateway {
   isTrustedIssuer(issuerAddress: string): Promise<boolean>;
-  isRevoked(credentialHash: string): Promise<boolean>;
+  /**
+   * 撤銷狀態以 issuer 命名空間查詢：`_revoked[issuer][credentialHash]`。
+   * 舊版是全域 `isRevoked(hash)`，導致任一受信任 issuer 可搶先撤銷他家憑證
+   * 且原簽發者永遠無法奪回（審查 H12）。issuerAddress 必須是該憑證的實際簽發者。
+   */
+  isRevoked(issuerAddress: string, credentialHash: string): Promise<boolean>;
   /** 信任根管理（dev/e2e 或具 owner 權限時可用） */
   setTrustedIssuer(issuerAddress: string, trusted: boolean): Promise<void>;
   /** 由 issuer 撤銷 VC（dev/e2e 或具私鑰時可用） */
@@ -30,13 +35,32 @@ export interface ChainGateway {
  */
 export class InMemoryChainGateway implements ChainGateway {
   private trusted = new Set<string>();
+  /** 鏡射合約的 issuer 命名空間：key 為 `${issuer}|${hash}` */
   private revoked = new Set<string>();
+  /** 撤銷操作者（記憶體模式無 msg.sender，由呼叫端在 e2e 中指定；預設為單一 dev issuer） */
+  private revokeAs?: string;
+
+  private key(issuerAddress: string, credentialHash: string): string {
+    return `${getAddress(issuerAddress)}|${credentialHash.toLowerCase()}`;
+  }
+
+  /** 設定後續 revoke/unrevoke 的操作者身分（鏡射 msg.sender） */
+  setRevokeAs(issuerAddress: string): void {
+    this.revokeAs = getAddress(issuerAddress);
+  }
+
+  private currentIssuer(): string {
+    if (!this.revokeAs) {
+      throw new Error("InMemoryChainGateway：請先 setRevokeAs(issuerAddress) 指定撤銷者身分");
+    }
+    return this.revokeAs;
+  }
 
   async isTrustedIssuer(issuerAddress: string): Promise<boolean> {
     return this.trusted.has(getAddress(issuerAddress));
   }
-  async isRevoked(credentialHash: string): Promise<boolean> {
-    return this.revoked.has(credentialHash.toLowerCase());
+  async isRevoked(issuerAddress: string, credentialHash: string): Promise<boolean> {
+    return this.revoked.has(this.key(issuerAddress, credentialHash));
   }
   async setTrustedIssuer(issuerAddress: string, trusted: boolean): Promise<void> {
     const a = getAddress(issuerAddress);
@@ -44,10 +68,10 @@ export class InMemoryChainGateway implements ChainGateway {
     else this.trusted.delete(a);
   }
   async revoke(credentialHash: string): Promise<void> {
-    this.revoked.add(credentialHash.toLowerCase());
+    this.revoked.add(this.key(this.currentIssuer(), credentialHash));
   }
   async unrevoke(credentialHash: string): Promise<void> {
-    this.revoked.delete(credentialHash.toLowerCase());
+    this.revoked.delete(this.key(this.currentIssuer(), credentialHash));
   }
 }
 
@@ -57,8 +81,9 @@ const ISSUER_REGISTRY_ABI = [
 ];
 const REVOCATION_REGISTRY_ABI = [
   "function revoke(bytes32 credentialHash) external",
+  "function revokeBatch(bytes32[] credentialHashes) external",
   "function unrevoke(bytes32 credentialHash) external",
-  "function isRevoked(bytes32 credentialHash) external view returns (bool)",
+  "function isRevoked(address issuer, bytes32 credentialHash) external view returns (bool)",
 ];
 
 export interface EthersGatewayOptions {
@@ -67,6 +92,10 @@ export interface EthersGatewayOptions {
   revocationRegistry: string;
   /** 需要寫入（撤銷/設信任）時提供；缺則唯讀 */
   privateKey?: string;
+  /** 期望的 chainId；設定後會在首次查詢時斷言，避免 RPC 指到別條鏈而靜默回錯值 */
+  expectedChainId?: number;
+  /** 交易確認等待上限（毫秒），避免卡住的交易讓 HTTP 連線無限期掛住 */
+  txTimeoutMs?: number;
 }
 
 /**
@@ -78,8 +107,14 @@ export class EthersChainGateway implements ChainGateway {
   private issuerRegistry: Contract;
   private revocationRegistry: Contract;
 
+  private expectedChainId?: number;
+  private txTimeoutMs: number;
+  private networkChecked?: Promise<void>;
+
   constructor(opts: EthersGatewayOptions) {
     this.provider = new JsonRpcProvider(opts.rpcUrl);
+    this.expectedChainId = opts.expectedChainId;
+    this.txTimeoutMs = opts.txTimeoutMs ?? 120_000;
     const runner = opts.privateKey
       ? (this.signer = new Wallet(opts.privateKey, this.provider))
       : this.provider;
@@ -91,29 +126,53 @@ export class EthersChainGateway implements ChainGateway {
     );
   }
 
+  /**
+   * 首次鏈上互動時斷言 chainId 相符（只做一次並快取 promise）。
+   * 少了這道檢查，把 RPC 指到別條鏈時查詢只會靜默回 false，沒有人會發現。
+   */
+  private async assertNetwork(): Promise<void> {
+    if (this.expectedChainId == null) return;
+    if (!this.networkChecked) {
+      this.networkChecked = (async () => {
+        const net = await this.provider.getNetwork();
+        if (Number(net.chainId) !== this.expectedChainId) {
+          throw new Error(
+            `RPC chainId 不符：期望 ${this.expectedChainId}，實得 ${net.chainId}（RPC 指到別條鏈？）`
+          );
+        }
+      })();
+    }
+    return this.networkChecked;
+  }
+
   async isTrustedIssuer(issuerAddress: string): Promise<boolean> {
+    await this.assertNetwork();
     return this.issuerRegistry.isTrustedIssuer(getAddress(issuerAddress));
   }
-  async isRevoked(credentialHash: string): Promise<boolean> {
-    return this.revocationRegistry.isRevoked(credentialHash);
+  async isRevoked(issuerAddress: string, credentialHash: string): Promise<boolean> {
+    await this.assertNetwork();
+    return this.revocationRegistry.isRevoked(getAddress(issuerAddress), credentialHash);
   }
   private requireSigner() {
     if (!this.signer) throw new Error("EthersChainGateway：唯讀模式，請提供 CHAIN_PRIVATE_KEY");
   }
   async setTrustedIssuer(issuerAddress: string, trusted: boolean): Promise<void> {
     this.requireSigner();
+    await this.assertNetwork();
     const tx = await this.issuerRegistry.setTrustedIssuer(getAddress(issuerAddress), trusted);
-    await tx.wait();
+    await tx.wait(1, this.txTimeoutMs);
   }
   async revoke(credentialHash: string): Promise<void> {
     this.requireSigner();
+    await this.assertNetwork();
     const tx = await this.revocationRegistry.revoke(credentialHash);
-    await tx.wait();
+    await tx.wait(1, this.txTimeoutMs);
   }
   async unrevoke(credentialHash: string): Promise<void> {
     this.requireSigner();
+    await this.assertNetwork();
     const tx = await this.revocationRegistry.unrevoke(credentialHash);
-    await tx.wait();
+    await tx.wait(1, this.txTimeoutMs);
   }
 }
 
