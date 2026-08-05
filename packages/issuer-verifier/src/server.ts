@@ -14,6 +14,7 @@ import {
   presentKycWithKeyBinding,
   verifyKycSdJwtPresentation,
   verifyReputationSdJwtPresentation,
+  isValidHolderDid,
 } from "./sdjwt.js";
 import { randomUUID, timingSafeEqual } from "crypto";
 import { scoreTransaction, fetchMetrics } from "./fraud.js";
@@ -143,6 +144,8 @@ export async function createApp(): Promise<{ app: express.Express; issuer: IIden
     try {
       const { holderDid, subject } = req.body ?? {};
       if (!holderDid) return res.status(400).json({ error: "缺 holderDid（請由錢包本機金鑰推導）" });
+      if (!isValidHolderDid(holderDid))
+        return res.status(400).json({ error: "holderDid 不是合法的 did:key（Secp256k1）" });
       const vc = await issueKycSdJwt({ issuer, holderDid, subject }, agent);
       res.json({ vc, holderDid, issuerDid: issuer.did });
     } catch (e: any) {
@@ -153,8 +156,13 @@ export async function createApp(): Promise<{ app: express.Express; issuer: IIden
   // 普惠金融：以電信繳費紀錄簽發 FinancialReputationCredential（SD-JWT）
   app.post("/sdjwt/issue-reputation", requireApiKey, async (req, res) => {
     try {
-      let { holderDid, msisdn } = req.body ?? {};
-      if (!holderDid) holderDid = (await createHolderDid(agent, `holder-${Date.now()}`)).did;
+      // holderDid 必填，與 /sdjwt/issue 一致。
+      // 舊版在缺 holderDid 時由伺服器代建 DID —— 那條路徑等於伺服器代管持有者私鑰，
+      // 與「金鑰自主」的主張直接矛盾，也是稽核列出的殘留代管路徑，此處一併關閉。
+      const { holderDid, msisdn } = req.body ?? {};
+      if (!holderDid) return res.status(400).json({ error: "缺 holderDid（請由錢包本機金鑰推導）" });
+      if (!isValidHolderDid(holderDid))
+        return res.status(400).json({ error: "holderDid 不是合法的 did:key（Secp256k1）" });
       const vc = await issueReputationSdJwt({ issuer, holderDid, msisdn }, agent);
       res.json({ vc, holderDid, issuerDid: issuer.did });
     } catch (e: any) {
@@ -274,6 +282,8 @@ export async function createApp(): Promise<{ app: express.Express; issuer: IIden
     try {
       const { holderDid, subject } = req.body ?? {};
       if (!holderDid) return res.status(400).json({ error: "缺 holderDid" });
+      if (!isValidHolderDid(holderDid))
+        return res.status(400).json({ error: "holderDid 不是合法的 did:key（Secp256k1）" });
       const vc = await issueKYCCredential(agent, { issuerDid: issuer.did, holderDid, subject });
       res.json({ vc, revocationKey: revocationKeyOf(vc) });
     } catch (e: any) {
@@ -286,6 +296,8 @@ export async function createApp(): Promise<{ app: express.Express; issuer: IIden
     try {
       const { holderDid, msisdn } = req.body ?? {};
       if (!holderDid || !msisdn) return res.status(400).json({ error: "缺 holderDid 或 msisdn" });
+      if (!isValidHolderDid(holderDid))
+        return res.status(400).json({ error: "holderDid 不是合法的 did:key（Secp256k1）" });
       const vc = await issueMobileRealNameCredential(agent, {
         issuerDid: issuerCht.did, // 第二發證者：中華電信門號電子卡
         holderDid,

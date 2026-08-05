@@ -36,6 +36,20 @@ function Stop-Started {
 
 Write-Host "=== ChainTrust Demo 啟動中 ===" -ForegroundColor Cyan
 
+# issuer-verifier 的 mutating 端點是 fail-closed：未設 API_KEY 一律回 503。
+# 為了讓 `pnpm demo` 開箱即用又不放寬安全預設，這裡在「本次執行的行程環境」裡
+# 產生一把一次性金鑰，同時給 issuer-verifier（驗證用）與 wallet dev server
+# （vite proxy 注入用）。金鑰只活在這次 demo 的記憶體裡，不寫檔、不入庫。
+if ([string]::IsNullOrWhiteSpace($env:API_KEY)) {
+  $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  $bytes = New-Object byte[] 32
+  $rng.GetBytes($bytes)
+  $env:API_KEY = -join ($bytes | ForEach-Object { $_.ToString("x2") })
+  Write-Host "[env] 已產生一次性 API_KEY（僅本次 demo 有效，未寫入任何檔案）" -ForegroundColor DarkGray
+} else {
+  Write-Host "[env] 使用既有的 API_KEY" -ForegroundColor DarkGray
+}
+
 try {
   # 1) AI 反詐服務
   $ai = Join-Path $root "packages/ai-service"

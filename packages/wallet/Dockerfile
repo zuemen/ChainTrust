@@ -31,7 +31,11 @@ RUN pnpm install --frozen-lockfile --filter @chaintrust/wallet... \
 # 監聽 8080（見 nginx.conf）。官方 nginx 映像的 master 仍是 root。
 FROM nginxinc/nginx-unprivileged:1.27-alpine
 
-COPY packages/wallet/nginx.conf /etc/nginx/conf.d/default.conf
+# 放進 templates/ 而非 conf.d/：官方 entrypoint 會對 *.template 跑 envsubst，
+# 把 ${CHAINTRUST_API_KEY} 換成執行期環境變數後才輸出到 /etc/nginx/conf.d/default.conf。
+# envsubst 只替換「已定義的環境變數名」，所以 $host / $scheme / $uri 這些 nginx 內建
+# 變數不會被誤換（除非真的存在同名環境變數，故金鑰用了帶前綴的長名字）。
+COPY packages/wallet/nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /repo/packages/wallet/dist /usr/share/nginx/html
 
 USER 101

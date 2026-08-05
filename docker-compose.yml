@@ -69,6 +69,10 @@ services:
     build:
       context: .
       dockerfile: packages/wallet/Dockerfile
+    environment:
+      # nginx 反代 /api/ 時補上的 X-API-Key（見 packages/wallet/nginx.conf.template）。
+      # 金鑰只存在代理層，不進瀏覽器 bundle —— 錢包是公開客戶端。
+      CHAINTRUST_API_KEY: ${API_KEY:-}
     # 容器內是 8080（nginx-unprivileged 以非 root 執行，綁不了特權埠）
     ports:
       - "5173:8080"

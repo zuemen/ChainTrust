@@ -32,6 +32,13 @@ server {
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
+
+    # mutating 端點的 API 金鑰在「這一層」補上，永遠不進瀏覽器。
+    # 錢包是公開客戶端：打包進 JS bundle 的金鑰按 F12 就看得到，等於沒有金鑰。
+    # 本檔是 nginx 官方映像的 envsubst 樣板（/etc/nginx/templates/*.template），
+    # CHAINTRUST_API_KEY 由 docker-compose 從 .env 的 API_KEY 帶進來。
+    # 同時清掉瀏覽器自帶的同名標頭，避免前端偽造金鑰穿透代理。
+    proxy_set_header X-API-Key "${CHAINTRUST_API_KEY}";
     # 後端若自帶標頭，以本層為準（避免重複 CSP 造成兩份政策取交集）
     proxy_hide_header Content-Security-Policy;
     proxy_hide_header X-Frame-Options;

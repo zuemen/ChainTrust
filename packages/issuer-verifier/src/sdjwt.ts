@@ -89,6 +89,23 @@ function jwkFromDidKey(did: string): { kty: string; crv: string; x: string; y: s
   return { kty: "EC", crv: "secp256k1", x, y };
 }
 
+/**
+ * holderDid 是否為本系統可用的 did:key（Secp256k1）。
+ *
+ * 給 HTTP 層在簽發前擋掉格式錯誤的輸入：沒有這道檢查，錯字或截斷的 DID
+ * 會一路走到簽發流程深處才丟例外，呼叫端只拿得到一個沒有資訊的 500，
+ * 與稽核既有原則（輸入錯誤回 400 並附原因）不一致。
+ */
+export function isValidHolderDid(did: unknown): did is string {
+  if (typeof did !== "string" || !did.startsWith("did:key:")) return false;
+  try {
+    jwkFromDidKey(did);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** 由 cnf JWK 推 ETH 位址（驗 KB 簽章用） */
 function addrFromJwk(jwk: { x: string; y: string }): string {
   const x = Buffer.from(jwk.x, "base64url").toString("hex").padStart(64, "0");

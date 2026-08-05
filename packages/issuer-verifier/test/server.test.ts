@@ -96,6 +96,26 @@ describe("輸入驗證：型別錯誤應回 400 而非 500", () => {
       .send({ revocationKey: "not-a-hash" });
     expect(r.status).toBe(400);
   });
+
+  // 格式錯誤的 holderDid 先前會一路走進簽發流程才丟例外，呼叫端只拿到
+  // 沒有資訊的 500。四個簽發端點都要在入口擋下並說明原因。
+  it.each([
+    ["/sdjwt/issue", { holderDid: "did:key:z-not-a-real-key" }],
+    ["/sdjwt/issue-reputation", { holderDid: "did:key:z-not-a-real-key" }],
+    ["/issue/kyc", { holderDid: "did:key:z-not-a-real-key" }],
+    ["/issue/mobile", { holderDid: "did:key:z-not-a-real-key", msisdn: "0912345678" }],
+  ])("%s 的 holderDid 格式錯誤回 400（修復前會 500）", async (path, body) => {
+    const r = await request(app).post(path).set("X-API-Key", TEST_KEY).send(body);
+    expect(r.status).toBe(400);
+    expect(String(r.body.error)).toContain("did:key");
+  });
+
+  // 金鑰自主：伺服器不得在缺 holderDid 時代建持有者 DID（等同代管私鑰）
+  it("/sdjwt/issue-reputation 缺 holderDid 回 400，不代建 DID", async () => {
+    const r = await request(app).post("/sdjwt/issue-reputation").set("X-API-Key", TEST_KEY).send({});
+    expect(r.status).toBe(400);
+    expect(r.body.vc).toBeUndefined();
+  });
 });
 
 describe("nonce 一次性與驗證政策強制", () => {
