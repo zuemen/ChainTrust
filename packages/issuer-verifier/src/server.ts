@@ -15,7 +15,7 @@ import {
   verifyKycSdJwtPresentation,
   verifyReputationSdJwtPresentation,
 } from "./sdjwt.js";
-import { randomUUID } from "crypto";
+import { randomUUID, timingSafeEqual } from "crypto";
 import { scoreTransaction, fetchMetrics } from "./fraud.js";
 import { issuerAddressFromIdentifier } from "./credentialHash.js";
 import { config } from "./config.js";
@@ -84,10 +84,37 @@ async function main() {
     res.status(500).json({ error: "internal_error" });
   };
 
-  // mutating 端點守門：設了 API_KEY 才強制檢查 X-API-Key（dev 未設則放行）
+  // mutating 端點守門（fail-closed）。
+  //
+  // 舊版是「沒設 API_KEY 就放行」，只要部署時忘了設環境變數，/issue/kyc、
+  // /sdjwt/issue、/revoke 等端點就完全公開 —— 任何人都能簽發假 KYC 憑證，
+  // 或撤銷他人的有效憑證。現在改為：沒有 API_KEY 就停用這些端點，除非在
+  // 離線 PoC（CHAIN_MODE=memory）下明確設定 ALLOW_UNAUTHENTICATED_DEV=true。
+  const devBypass = config.allowUnauthenticatedDev && config.chainMode === "memory";
+  if (!config.apiKey) {
+    if (devBypass) {
+      console.warn(
+        "[issuer-verifier] 警告：未設 API_KEY 且 ALLOW_UNAUTHENTICATED_DEV=true，" +
+          "簽發／撤銷端點目前無需驗證。僅限本機開發，切勿用於任何對外部署。"
+      );
+    } else {
+      console.warn(
+        "[issuer-verifier] 未設定 API_KEY：簽發／撤銷端點已停用（回 503）。" +
+          "請設定 API_KEY，或在本機 PoC 下設 ALLOW_UNAUTHENTICATED_DEV=true。"
+      );
+    }
+  }
+
   const requireApiKey: express.RequestHandler = (req, res, next) => {
-    if (!config.apiKey) return next();
-    if (req.header("X-API-Key") === config.apiKey) return next();
+    if (!config.apiKey) {
+      if (devBypass) return next();
+      return res.status(503).json({ error: "issuing_disabled_no_api_key" });
+    }
+    const provided = req.header("X-API-Key") ?? "";
+    // 定長比較，避免以回應時間逐字元猜測金鑰
+    const a = Buffer.from(provided);
+    const b = Buffer.from(config.apiKey);
+    if (a.length === b.length && timingSafeEqual(a, b)) return next();
     return res.status(401).json({ error: "unauthorized" });
   };
 
