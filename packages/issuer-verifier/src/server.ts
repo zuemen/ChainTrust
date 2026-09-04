@@ -17,7 +17,7 @@ import {
   isValidHolderDid,
 } from "./sdjwt.js";
 import { randomUUID, timingSafeEqual } from "crypto";
-import { scoreTransaction, fetchMetrics } from "./fraud.js";
+import { scoreTransaction, fetchMetrics, warmUpFraudService } from "./fraud.js";
 import { issuerAddressFromIdentifier } from "./credentialHash.js";
 import { config } from "./config.js";
 import type { IIdentifier } from "@veramo/core";
@@ -394,6 +394,20 @@ async function main() {
     process.exit(1);
   }
   const { app, issuer } = await createApp();
+
+  // AI 服務暖機：不阻塞啟動（免費方案冷啟動要數十秒，await 它會拖垮自己的
+  // 健康檢查）。純盡力而為，失敗只記一行日誌。
+  if (config.aiWarmupTimeoutMs > 0) {
+    void warmUpFraudService().then((ok) => {
+      console.log(`[issuer-verifier] AI 服務暖機${ok ? "成功" : "未成功（將於首次評分時重試）"}：${config.aiServiceUrl}`);
+    });
+  }
+  // 選用的 keepalive：demo 進行中避免 AI 服務因閒置而休眠。
+  if (config.aiKeepaliveMs > 0) {
+    setInterval(() => void warmUpFraudService({ timeoutMs: 20000 }), config.aiKeepaliveMs).unref();
+    console.log(`[issuer-verifier] AI 服務 keepalive 已啟用：每 ${config.aiKeepaliveMs} ms`);
+  }
+
   app.listen(config.port, () => {
     console.log(`[issuer-verifier] 服務啟動 http://localhost:${config.port}`);
     console.log(`[issuer-verifier] chainMode=${config.chainMode} issuer=${issuer.did}`);

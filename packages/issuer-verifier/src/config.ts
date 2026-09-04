@@ -31,6 +31,19 @@ export const config = {
   chainPrivateKey: process.env.CHAIN_PRIVATE_KEY,
   // AI 反詐服務（M2 用）
   aiServiceUrl: process.env.AI_SERVICE_URL ?? "http://localhost:8000",
+  // 呼叫 AI 服務的逾時。分成兩個是因為兩條路徑的取捨不同：
+  //  - score：使用者正在等待驗證結果，逾時要有上限，寧可降級成 review。
+  //  - metrics：錢包載入時呼叫，沒有人在等，可以放長；這條路徑同時擔任
+  //    「把睡著的 AI 服務叫醒」的角色。
+  // 背景：免費方案的 PaaS（如 Render）閒置會休眠，冷啟動實測約 33–50 秒。
+  // 舊版兩條路徑都寫死 5 秒 —— 每次請求都在 5 秒被 abort，容器永遠來不及
+  // 開機完成，反詐功能會一直停在「服務不可用」而且無法自行恢復。
+  aiTimeoutMs: Number(process.env.AI_TIMEOUT_MS ?? 15000),
+  aiMetricsTimeoutMs: Number(process.env.AI_METRICS_TIMEOUT_MS ?? 60000),
+  // 啟動時先送一次暖機請求（不阻塞啟動）；0 為關閉。
+  aiWarmupTimeoutMs: Number(process.env.AI_WARMUP_TIMEOUT_MS ?? 60000),
+  // 週期性 keepalive，避免 demo 進行到一半 AI 服務睡著；0 為關閉。
+  aiKeepaliveMs: Number(process.env.AI_KEEPALIVE_MS ?? 0),
   // did:ethr 用的網路名稱（落地時換 CHT BaaS）
   ethrNetwork: process.env.ETHR_NETWORK ?? "polygon:amoy",
   ethrChainId: Number(process.env.ETHR_CHAIN_ID ?? 80002),

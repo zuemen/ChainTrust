@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { scoreTransaction } from "../src/fraud.js";
+import { scoreTransaction, fetchMetrics, warmUpFraudService } from "../src/fraud.js";
 import { MockThreatIntelAdapter } from "../src/adapters/cht.js";
 
 function mockFetch(status: number, body: unknown): typeof fetch {
@@ -85,5 +85,61 @@ describe("fraud /score 客戶端 (M2.1)", () => {
       { baseUrl: "http://x", fetchImpl, threatIntelAdapter: new MockThreatIntelAdapter() }
     );
     expect(calls[0].threat_intel_hit).toBeUndefined();
+  });
+});
+
+/**
+ * 冷啟動回歸測試。
+ *
+ * 免費方案的 PaaS 閒置會休眠，冷啟動實測約 33–50 秒。舊版把逾時寫死 5 秒，
+ * 每次請求都在容器開機完成前就 abort —— 服務一旦睡著就再也醒不過來，
+ * 反詐功能會永久停在「不可用」。以下釘住三件事：逾時可調、逾時原因可辨識、
+ * 有一條專門的長逾時暖機路徑。
+ */
+describe("AI 服務冷啟動韌性", () => {
+  /** 模擬「回應比逾時慢」的服務。 */
+  function slowFetch(delayMs: number): typeof fetch {
+    return ((_url: string, init?: RequestInit) =>
+      new Promise((resolve, reject) => {
+        const t = setTimeout(
+          () => resolve({ ok: true, status: 200, json: async () => ({ available: true }) } as Response),
+          delayMs
+        );
+        init?.signal?.addEventListener("abort", () => {
+          clearTimeout(t);
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+      })) as unknown as typeof fetch;
+  }
+
+  it("逾時可由呼叫端調長：慢回應在短逾時下失敗、長逾時下成功", async () => {
+    const short = await fetchMetrics({ baseUrl: "http://x", timeoutMs: 20, fetchImpl: slowFetch(120) });
+    expect(short.available).toBe(false);
+
+    const long = await fetchMetrics({ baseUrl: "http://x", timeoutMs: 400, fetchImpl: slowFetch(120) });
+    expect(long.available).toBe(true);
+  });
+
+  it("不可用時回報原因，區分逾時與連不上（部署排查用）", async () => {
+    const timedOut = await fetchMetrics({ baseUrl: "http://x", timeoutMs: 20, fetchImpl: slowFetch(120) });
+    expect(timedOut.reason).toBe("timeout");
+
+    const dead = (async () => {
+      throw new Error("ECONNREFUSED");
+    }) as unknown as typeof fetch;
+    expect((await fetchMetrics({ baseUrl: "http://x", fetchImpl: dead })).reason).toBe("unreachable");
+
+    expect((await fetchMetrics({ baseUrl: "http://x", fetchImpl: mockFetch(502, {}) })).reason).toBe("http_502");
+  });
+
+  it("暖機成功回 true、失敗回 false 且不拋錯（純盡力而為）", async () => {
+    expect(await warmUpFraudService({ baseUrl: "http://x", fetchImpl: mockFetch(200, {}) })).toBe(true);
+
+    const dead = (async () => {
+      throw new Error("ECONNREFUSED");
+    }) as unknown as typeof fetch;
+    expect(await warmUpFraudService({ baseUrl: "http://x", fetchImpl: dead })).toBe(false);
   });
 });

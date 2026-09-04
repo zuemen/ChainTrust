@@ -55,7 +55,7 @@ export async function scoreTransaction(
   const baseUrl = opts?.baseUrl ?? config.aiServiceUrl;
   const doFetch = opts?.fetchImpl ?? fetch;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? 5000);
+  const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? config.aiTimeoutMs);
   try {
     let body: TxContext & { threat_intel_hit?: boolean } = ctx;
     if (ctx.payee_account_id) {
@@ -89,17 +89,42 @@ export async function scoreTransaction(
 /** 取得 AI 模型評估報告（PR-AUC、校準、基線、CHT 增益）。供前端可信度報告/簡報。 */
 export async function fetchMetrics(
   opts?: { baseUrl?: string; timeoutMs?: number; fetchImpl?: typeof fetch }
-): Promise<{ available: boolean; model_loaded?: boolean; metrics?: unknown }> {
+): Promise<{ available: boolean; model_loaded?: boolean; metrics?: unknown; reason?: string }> {
   const baseUrl = opts?.baseUrl ?? config.aiServiceUrl;
   const doFetch = opts?.fetchImpl ?? fetch;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? 5000);
+  const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? config.aiMetricsTimeoutMs);
   try {
     const res = await doFetch(`${baseUrl}/metrics`, { signal: controller.signal });
-    if (!res.ok) return { available: false };
+    // 帶上 reason：部署後只看到 available:false 無從判斷是網址設錯、服務睡著
+    // 還是模型沒載入，排查時只能靠猜。
+    if (!res.ok) return { available: false, reason: `http_${res.status}` };
     return (await res.json()) as { available: boolean; model_loaded?: boolean; metrics?: unknown };
+  } catch (e: unknown) {
+    const aborted = e instanceof Error && e.name === "AbortError";
+    return { available: false, reason: aborted ? "timeout" : "unreachable" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * 暖機：對 AI 服務送一次長逾時的 /health，把休眠中的容器叫醒。
+ * 免費方案的 PaaS 冷啟動要數十秒，正常請求的逾時遠短於此，因此若沒有這條
+ * 專門的長逾時路徑，服務一旦睡著就再也醒不過來。失敗不拋錯（純盡力而為）。
+ */
+export async function warmUpFraudService(
+  opts?: { baseUrl?: string; timeoutMs?: number; fetchImpl?: typeof fetch }
+): Promise<boolean> {
+  const baseUrl = opts?.baseUrl ?? config.aiServiceUrl;
+  const doFetch = opts?.fetchImpl ?? fetch;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? config.aiWarmupTimeoutMs);
+  try {
+    const res = await doFetch(`${baseUrl}/health`, { signal: controller.signal });
+    return res.ok;
   } catch {
-    return { available: false };
+    return false;
   } finally {
     clearTimeout(timer);
   }
