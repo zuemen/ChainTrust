@@ -86,6 +86,7 @@ pnpm test             # 跑所有 JS/TS 套件測試
 - [`docs/ai-fraud-spec.md`](docs/ai-fraud-spec.md) — AI 反詐模組規格
 - [`docs/model-card.md`](docs/model-card.md) — 反詐模型 Model Card（訓練資料/限制/偏誤/治理）
 - [`docs/amoy-deploy-checklist.md`](docs/amoy-deploy-checklist.md) — Amoy 測試網部署清單
+- [`docs/vercel-deploy.md`](docs/vercel-deploy.md) — 線上 Demo 部署（錢包上 Vercel、兩個後端上 Render/Railway）
 - [`docs/completeness-roadmap.md`](docs/completeness-roadmap.md) — 完整度分析、P0/P1/P2 待辦、逐項執行日誌
 - [`CLAUDE.md`](CLAUDE.md) — 專案脈絡與開發規範（給 Claude Code）
 
