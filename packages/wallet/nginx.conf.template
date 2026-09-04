@@ -28,8 +28,18 @@ server {
 
   # /api/* 轉發到 issuer-verifier（去掉 /api 前綴，與 vite proxy 行為一致）
   location /api/ {
-    proxy_pass http://issuer-verifier:3001/;
-    proxy_set_header Host $host;
+    # 上游位址由環境變數決定，envsubst 在容器啟動時代換成「字面值」，
+    # 所以 proxy_pass 拿到的是靜態 URL，不需要 resolver：
+    #   docker compose → http://issuer-verifier:3001（服務名）
+    #   Render 等 PaaS → https://chaintrust-iv.onrender.com
+    # 預設值寫在 packages/wallet/Dockerfile 的 ENV，compose 不必改也能跑。
+    proxy_pass ${CHAINTRUST_IV_URL}/;
+
+    # 上游是 PaaS 時，路由同時看 Host 標頭與 TLS SNI，兩者都必須是「上游的」網域。
+    # 這裡不能用 $host（那是錢包自己的網域），否則請求會被路由到錯的服務。
+    proxy_set_header Host ${CHAINTRUST_IV_HOST};
+    proxy_ssl_server_name on;
+
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
 

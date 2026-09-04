@@ -73,6 +73,9 @@ services:
       # nginx 反代 /api/ 時補上的 X-API-Key（見 packages/wallet/nginx.conf.template）。
       # 金鑰只存在代理層，不進瀏覽器 bundle —— 錢包是公開客戶端。
       CHAINTRUST_API_KEY: ${API_KEY:-}
+      # nginx 反代的上游（與 Dockerfile 的 ENV 預設值相同，寫在這裡是為了看得見）
+      CHAINTRUST_IV_URL: http://issuer-verifier:3001
+      CHAINTRUST_IV_HOST: issuer-verifier
     # 容器內是 8080（nginx-unprivileged 以非 root 執行，綁不了特權埠）
     ports:
       - "5173:8080"

@@ -38,5 +38,11 @@ FROM nginxinc/nginx-unprivileged:1.27-alpine
 COPY packages/wallet/nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /repo/packages/wallet/dist /usr/share/nginx/html
 
+# nginx.conf.template 的 envsubst 佔位符預設值。
+# 預設指向 docker-compose 的服務名，所以 `docker compose up` 不必設任何東西；
+# 部署到 Render 等 PaaS 時，用環境變數覆寫成後端的公開網址與網域。
+ENV CHAINTRUST_IV_URL=http://issuer-verifier:3001
+ENV CHAINTRUST_IV_HOST=issuer-verifier
+
 USER 101
 EXPOSE 8080
