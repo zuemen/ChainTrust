@@ -115,6 +115,7 @@ README 寫「**普惠財務信譽** — 無信用紀錄者也能累積可攜、�
 ### P0 — 比賽決賽前必補（直接影響評審觀感）
 
 - [x] **普惠金融實作補位**：新增 `FinancialReputationCredential`（mock 電信繳費紀錄 adapter → 簽發信譽 VC → 錢包出示給「微型貸款」情境），Demo 加第 6 步。四大主軸缺一軸的問題就此解決。（2026-07-02）
+- [x] **線上 Demo 可部署**：錢包上 Vercel（`packages/wallet/vercel.json` + Serverless 代理 `api/[...path].js`，第三種「代理層注入 API 金鑰」實作），兩個後端上吃 Docker 的 PaaS。手冊見 `docs/vercel-deploy.md`。評審不用自己 clone repo 就能玩。（2026-09-04）
 - [ ] **真部署 Polygon Amoy**：照 `amoy-deploy-checklist.md` 執行，Demo 附 PolygonScan 連結，回答「真的在鏈上嗎」。
   **（2026-07-02 準備工作已完成，只差有測試幣的私鑰）**：`smoke:amoy` 腳本已就緒（deployer 自我背書→revoke→unrevoke→印 PolygonScan 連結）、server 於 ethers 模式自動背書示範 issuer、localhost 鏈已演練 deploy+smoke 全流程。接手者只需：①測試錢包領 Amoy POL ②建兩個 `.env`（見 checklist 步驟 3、7）③依序跑 `deploy:amoy`→`smoke:amoy`→`CHAIN_MODE=ethers` e2e ④回填 PolygonScan 連結至 DEMO.md。**注意**：撤銷交易的 msg.sender 必須受信任，`smoke:amoy` 的 deployer 自我背書是 e2e/server 撤銷能走通的前置，勿跳過。
 - [x] **「為什麼要鏈」一頁論述**（中立性/稽核/可攜，見 2.2）進 architecture.md 或簡報。（2026-07-02，architecture.md §1）
@@ -150,6 +151,8 @@ README 寫「**普惠財務信譽** — 無信用紀錄者也能累積可攜、�
 
 | 日期 | 階段 | 內容 |
 | :-- | :-- | :-- |
+| 2026-09-04 | 部署（P0） | 錢包支援部署到 Vercel：新增 `packages/wallet/api/[...path].js`（Serverless 反向代理，去 `/api` 前綴、注入 `X-API-Key`、清掉瀏覽器自帶的同名標頭）與 `vercel.json`（SPA rewrite 排除 `/api`、照 `nginx.conf.template` 移植安全標頭並加 HSTS），手冊 `docs/vercel-deploy.md`。**設計決策**：只有錢包上 Vercel——issuer-verifier 的 Veramo agent 與一次性 nonce 存在行程記憶體、ai-service 建置時要訓練 LightGBM 且需 libgomp，兩者都不適合 Serverless，留在吃 Docker 的 PaaS。以真後端實跑代理驗證（GET 透傳 200、POST 簽出 1606 字元 SD-JWT、偽造金鑰被清掉、缺 IV_URL 回 500、缺金鑰回 401）。 |
+| 2026-09-04 | 整合 | `feat/browser-holder-keys` 合回 `main`（金鑰自主 + 安全稽核 + CI + 商業模式/法規文件，60 檔 +5126 行）。解 `config.ts`/`server.ts` 兩處衝突（分支的啟動期 fail-closed 與 main 的 `ALLOW_UNAUTHENTICATED_DEV` 開發旁路合併保留）。順帶：新增 `packages/issuer-verifier/vitest.config.ts` 把 hook timeout 從 10s 放寬到 30s（`server.test.ts` 的 `beforeAll` 要動態載入整個 Veramo 相依，冷啟動在較慢機器/CI 上會誤判失敗）；重訓 demo 模型讓 `metrics.json` 與現行模型同步。測試：合約 32、issuer-verifier 67、ai-service 32 全綠。 |
 | 2026-07-21 | P1（CHT 產品對應表） | §3.1 表格改用實際查證的 CHT 產品（來源與日期見表格下方）：`MobileCardAdapter`→MID+（2026-07-01 甫發表）＋GSMA Open Gateway；`ThreatIntelAdapter`→同批 Open Gateway 防詐 API＋中華資安國際/CHTTL 威脅情資；`BaasAdapter`→CHT BaaS（Ethereum/Hyperledger、hicloud）；`BillingHistoryAdapter`部分對應 KYC Tenure API。**加分發現**：CHTTL 已有遵循 W3C DID 標準的 DID 研發項目，與本專案架構高度一致。**風險發現**：HiPKI/ePKI 根憑證 2026-08-01 起被 Chrome 撤銷信任，`PublicCaAdapter` 落地前需先釐清影響範圍。Hami Pay 無公開開發者 API、電信繳費明細無公開 API，兩者維持誠實保留。已將調研結果寫進 4 個 adapter 介面（`cht.ts`）與 `ChainGateway`（`gateway.ts`）的檔頭註記；順帶修正 `poc-spec.md` 的 `BaasAdapter`/程式碼命名不一致問題。 |
 | 2026-07-21 | P1（Model Card） | 新增 `docs/model-card.md`：現行合成 hard-mode 模型的完整治理文件（訓練資料含真 PaySim 棄用理由、LightGBM+IsolationForest 架構、指標、5 項限制、偏誤聲明、重訓/漂移監控建議、人工審核責任分工）。**新發現並主動揭露**：`account_age_days`(重要度全模型#2)、`vc_age_days`(#3) 等反詐特徵會懲罰無聯徵薄檔用戶，與普惠金融目標用戶重疊，此張力此前未被任何文件記錄；順帶修正 §2.3「缺口」清單裡兩則已過時的描述（LR>LGBM 誤解、model card 缺口）。 |
 | 2026-07-21 | P1（ThreatIntelAdapter） | 情資命中接進 `/score`：新增 TS `ThreatIntelAdapter`/`MockThreatIntelAdapter`（`packages/issuer-verifier/src/adapters/cht.ts`），`scoreTransaction()` 依 `payee_account_id` 查詢後把 `threat_intel_hit` 併入請求；Python 端新增 `THREAT_INTEL_HIT` reason code（權重 35），規則模式自動加總、模型模式於 `model.py` 後處理加成，兩端測試全綠（ai-service 22、issuer-verifier 26）。設計文件見 `docs/superpowers/specs/2026-07-21-threat-intel-adapter-design.md`。 |
