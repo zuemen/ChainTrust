@@ -28,7 +28,13 @@ localStorage 的金鑰，使用者按 F12 就看得到，等於沒有金鑰。
 | :-- | :-- | :-- |
 | 本機 dev | vite proxy | `packages/wallet/vite.config.ts` |
 | Docker | nginx | `packages/wallet/nginx.conf.template` |
-| **Vercel** | **Serverless Function** | **`packages/wallet/api/[...path].js`** |
+| **Vercel** | **Serverless Function** | **`packages/wallet/api/proxy.js`** |
+
+> **為什麼 Vercel 這一份是 `proxy.js` + 顯式 rewrite，而不是 `api/[...path].js`**：
+> 實測 Vercel 對 `api/[...path].js` 只產生「單層動態段」的路由 —— `/api/health` 進得來，
+> `/api/sdjwt/issue` 會被平台直接回 `NOT_FOUND`（根本沒進 function）。所以改由 `vercel.json`
+> 的 rewrite 明確把 `/api/:path*` 導到 `api/proxy.js`，原始路徑用 `__p` 查詢參數夾帶。
+> 本機 vite proxy 與 Docker nginx 不受影響。
 
 這一層同時做三件事：去掉 `/api` 前綴、注入 `X-API-Key`、**清掉瀏覽器自帶的同名標頭**
 （避免前端偽造金鑰穿透代理）。走同源代理的附帶好處是後端 CORS 不必放寬，

@@ -8,6 +8,12 @@
  *   2. **同源**。前端 api.ts 打的是相對路徑 /api，走同源就不需要放寬後端 CORS，
  *      CSP 也能維持 connect-src 'self'。
  *
+ * 為什麼是 proxy.js + 顯式 rewrite，而不是 api/[...path].js：
+ *   實測 Vercel 對 api/[...path].js 只產生「單層動態段」的路由 ——
+ *   /api/health 進得來，/api/sdjwt/issue 直接被平台回 404（根本沒進 function）。
+ *   所以改由 vercel.json 的 rewrite 明確把 /api/:path* 導到本檔，
+ *   原始路徑用 __p 查詢參數夾帶進來（見下方 resolveUpstreamPath）。
+ *
  * 環境變數（Vercel → Settings → Environment Variables）：
  *   IV_URL   issuer-verifier 的公開網址，例如 https://chaintrust-iv.onrender.com
  *   API_KEY  issuer-verifier 的 mutating 端點金鑰（與後端那邊設的同一把）
@@ -26,6 +32,26 @@ const STRIPPED = new Set([
   "x-api-key",
 ]);
 
+/**
+ * 還原「要打到 issuer-verifier 的路徑 + 查詢字串」。
+ *
+ * 兩種情形都要能處理，因為 Vercel 在 rewrite 後給 function 的 req.url
+ * 不保證是原始路徑：
+ *   a) req.url = /api/proxy?__p=sdjwt/issue&foo=1  → 取 __p
+ *   b) req.url = /api/sdjwt/issue?foo=1            → 去掉 /api 前綴
+ * 兩者都會把 __p 從轉發出去的查詢字串裡拿掉。
+ */
+function resolveUpstreamPath(rawUrl) {
+  const u = new URL(rawUrl || "/", "http://proxy.local");
+  const carried = u.searchParams.getAll("__p");
+  u.searchParams.delete("__p");
+  const rest = carried.length
+    ? carried.join("/")
+    : u.pathname.replace(/^\/api\/?/, "");
+  const path = "/" + rest.replace(/^\/+/, "");
+  return path + (u.search === "?" ? "" : u.search);
+}
+
 export default async function handler(req, res) {
   const target = process.env.IV_URL;
   if (!target) {
@@ -33,9 +59,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  // /api/sdjwt/verify?x=1 → /sdjwt/verify?x=1（與 vite proxy 的 rewrite 一致）
-  const path = req.url.replace(/^\/api/, "") || "/";
-  const url = new URL(path, target).toString();
+  const url = new URL(resolveUpstreamPath(req.url), target).toString();
 
   const headers = {};
   for (const [k, v] of Object.entries(req.headers)) {
