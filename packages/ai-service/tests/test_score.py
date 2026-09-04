@@ -134,6 +134,85 @@ def test_pattern_reason_codes():
     assert "STRUCTURING" in reason_codes(st)
 
 
+# ── H14：圖譜特徵必須真的走得完 API 路徑（不能只在直呼 reason_codes 時綠燈）──
+def test_graph_reason_codes_survive_api_path():
+    """回歸測試：ScoreRequest 先前沒宣告 payee_fan_in/account_graph_risk 且 extra="ignore"，
+    呼叫端帶了也被 pydantic 丟掉 → MULE_RING/FAN_IN_COLLECTION 經 /score 永不觸發。
+    上面的 test_pattern_reason_codes 直呼 reason_codes(ctx) 繞過 pydantic，所以綠燈掩蓋了問題。
+    這裡改走 TestClient，證明圖譜訊號真的抵達模型/規則層。"""
+    pt = next(s for s in _samples() if s["label"] == "pass_through_mule")["ctx"]
+    assert pt["payee_fan_in"] == 9 and pt["account_graph_risk"] == 0.7  # demo 資料前提
+    body = client.post("/score", json=pt).json()
+    assert "FAN_IN_COLLECTION" in body["reasons"], body
+    assert "MULE_RING" in body["reasons"], body
+
+    # account_graph_risk=0.85（>=0.6）但 payee_fan_in=2（<5）→ 靠圖譜風險本身觸發兩者
+    fi = next(s for s in _samples() if s["label"] == "fan_in_collection")["ctx"]
+    body2 = client.post("/score", json=fi).json()
+    assert "FAN_IN_COLLECTION" in body2["reasons"] and "MULE_RING" in body2["reasons"], body2
+
+
+def test_graph_features_reach_the_model_not_just_rules():
+    """同一筆交易，帶圖譜訊號 vs 不帶，風險分數應有差異
+    → 證明 payee_fan_in/account_graph_risk 有進到特徵向量（train/serve 不再偏移）。"""
+    base = {
+        "type": "TRANSFER", "amount": 120000, "oldbalanceOrg": 130000, "newbalanceOrig": 5000,
+        "oldbalanceDest": 1000, "newbalanceDest": 1000, "tx_count_1h": 2, "tx_count_24h": 6,
+        "device_changed": False, "mobile_realname_verified": True, "vc_age_days": 400,
+        "account_age_days": 700, "cross_institution_presentations": 2, "payee_risk": 0.2,
+        "geo_jump": False,
+    }
+    with_graph = {**base, "payee_fan_in": 9, "account_graph_risk": 0.9}
+    a = client.post("/score", json=base).json()
+    b = client.post("/score", json=with_graph).json()
+    assert a["reasons"].count("MULE_RING") == 0
+    assert "MULE_RING" in b["reasons"]
+    assert b["risk"] >= a["risk"], (a, b)
+
+
+def test_graph_field_bounds():
+    """圖譜欄位界限：account_graph_risk 限 0..1、payee_fan_in 不可為負。"""
+    ok = {"type": "PAYMENT", "amount": 100, "payee_fan_in": 0, "account_graph_risk": 1.0}
+    assert client.post("/score", json=ok).status_code == 200
+    assert client.post("/score", json={**ok, "account_graph_risk": 1.5}).status_code == 422
+    assert client.post("/score", json={**ok, "account_graph_risk": -0.1}).status_code == 422
+    assert client.post("/score", json={**ok, "payee_fan_in": -1}).status_code == 422
+
+
+# ── H15：負值/極值輸入應回 422，不可讓 math.log1p 炸成 500 ──
+def test_negative_amount_rejected_not_500():
+    """先前 amount=-1 會走進 featurize 的 math.log1p(-1) → ValueError → 500。"""
+    r = client.post("/score", json={"type": "PAYMENT", "amount": -1})
+    assert r.status_code == 422, r.text
+    for field in ("oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest"):
+        assert client.post("/score", json={field: -100}).status_code == 422, field
+
+
+def test_out_of_range_fields_rejected():
+    assert client.post("/score", json={"payee_risk": 1.5}).status_code == 422
+    assert client.post("/score", json={"payee_risk": -0.1}).status_code == 422
+    assert client.post("/score", json={"tx_count_1h": -1}).status_code == 422
+    assert client.post("/score", json={"vc_age_days": -1}).status_code == 422
+    assert client.post("/score", json={"account_age_days": -1}).status_code == 422
+    assert client.post("/score", json={"cross_institution_presentations": -1}).status_code == 422
+    # 荒謬大額（超過 1e15）被擋掉，而非讓下游數值運算溢位
+    assert client.post("/score", json={"amount": 1e18}).status_code == 422
+    # 合理範圍內的大額仍應正常評分
+    ok = client.post("/score", json={"type": "TRANSFER", "amount": 1e12, "oldbalanceOrg": 1e12})
+    assert ok.status_code == 200 and 0 <= ok.json()["risk"] <= 100
+
+
+def test_featurize_clamps_negative_amount():
+    """featurize 也被 train.py / rules.py 直接呼叫（繞過 pydantic）→ 雙保險 clamp。"""
+    from app.featurize import featurize
+    f = featurize({"type": "PAYMENT", "amount": -5000})
+    assert f["amount_log"] == 0.0
+    # 規則層直呼也不應丟例外
+    from app.rules import rule_risk
+    risk, _ = rule_risk({"type": "PAYMENT", "amount": -5000})
+    assert 0 <= risk <= 100
+
+
 # ── 台灣脈絡：警示帳戶每日限額（≤1 萬）規避 ──
 def test_taiwan_watchlist_limit_evasion():
     """新制警示帳戶每日轉帳/提領 ≤ NT$1 萬；貼門檻下方的多筆小額（9,900）應觸發 STRUCTURING。"""
@@ -246,6 +325,82 @@ def test_threat_intel_hit_rule_and_weight():
     risk, codes = rule_risk({"threat_intel_hit": True})
     assert risk == WEIGHTS["THREAT_INTEL_HIT"] == 35
     assert codes == ["THREAT_INTEL_HIT"]
+
+
+# ── C4：標籤洩漏的護欄與誠實度標註 ──
+def _synth():
+    import sys, os
+    sys.path.insert(0, os.path.dirname(HERE))
+    import synth
+    return synth
+
+
+def test_augment_cht_signals_requires_explicit_opt_in():
+    """augment_cht_signals 以 isFraud 為條件生成特徵（結構性標籤洩漏）。
+    呼叫端必須明示 allow_label_conditioning=True，否則不得執行——
+    讓「在真實資料上不小心套用」變成做不到的事。"""
+    import pandas as pd
+    import pytest
+
+    synth = _synth()
+    df = pd.DataFrame([{"isFraud": 1, "amount": 100}, {"isFraud": 0, "amount": 50}])
+
+    # 忘記傳 → TypeError（keyword-only 必填）
+    with pytest.raises(TypeError):
+        synth.augment_cht_signals(df)
+    # 明示 False → ValueError 且訊息點名標籤洩漏
+    with pytest.raises(ValueError, match="標籤"):
+        synth.augment_cht_signals(df, allow_label_conditioning=False)
+    # 明示 True（demo 用途）才放行
+    out = synth.augment_cht_signals(df, allow_label_conditioning=True)
+    assert all(c in out.columns for c in synth.CHT_SIGNAL_COLS)
+
+
+def test_neutral_fill_is_label_independent():
+    """真實資料缺 CHT 欄位時的正確作法：與標籤獨立的中性補值，且不覆蓋既有欄位。"""
+    import numpy as np
+    import pandas as pd
+
+    synth = _synth()
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame({
+        "isFraud": rng.integers(0, 2, 4000),
+        "device_changed": np.zeros(4000, dtype=int),  # 既有欄位不可被覆蓋
+    })
+    out = synth.fill_neutral_cht_signals(df)
+    assert all(c in out.columns for c in synth.CHT_SIGNAL_COLS)
+    assert (out["device_changed"] == 0).all()
+    # 中性欄位在詐欺/正常兩組的平均應幾乎一致（無標籤資訊）
+    f = out["isFraud"] == 1
+    assert abs(out.loc[f, "payee_risk"].mean() - out.loc[~f, "payee_risk"].mean()) < 0.05
+
+
+def test_synth_docstring_matches_implementation():
+    """H16：docstring 曾宣稱「標籤由潛在風險 logit + Bernoulli 抽樣產生」，
+    實作卻是分塊硬標 0/1。docstring 必須說實話。"""
+    synth = _synth()
+    doc = synth.__doc__ or ""
+    assert "Bernoulli" not in doc or "沒有 Bernoulli" in doc or "也沒有 Bernoulli" in doc
+    assert "硬寫" in doc  # 明說標籤是硬寫的
+    assert "1.5%" in doc  # 明說唯一的標籤隨機性來源
+
+
+def test_metrics_ablation_carries_honesty_caveat():
+    """metrics.json 的 CHT 消融必須自帶誠實度標註，避免 lift_pct 被當成真實增益引用。"""
+    import json as _json
+    path = os.path.join(os.path.dirname(HERE), "metrics.json")
+    with open(path, encoding="utf-8") as f:
+        m = _json.load(f)
+    ab = m["cht_signal_ablation"]
+    # 既有欄位保持相容（錢包 packages/wallet 讀這些 key）
+    for k in ("without_cht_pr_auc", "with_cht_pr_auc", "lift_pr_auc", "lift_pct", "signals"):
+        assert k in ab, k
+    # 新增的誠實度欄位
+    assert ab["evidence_grade"] == "simulation"
+    assert ab["label_conditioned"] is True
+    assert "not evidence of real-world lift" in ab["caveat"]
+    assert m["data_honesty"]["synthetic_only"] is True
+    assert m["risk_score_composition"]["metrics_computed_on"].startswith("p_fraud")
 
 
 def test_threat_intel_hit_boosts_risk_and_reason():

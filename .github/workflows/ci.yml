@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# 只讀 repo，不需要寫入權限
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------
+  # contracts（Hardhat）+ issuer-verifier（vitest）
+  # ---------------------------------------------------------------
+  node:
+    name: Node — contracts + issuer-verifier
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm 版本以 root package.json 的 packageManager 欄位為準
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      # --frozen-lockfile：lockfile 與 package.json 不一致就直接失敗
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build contracts (hardhat compile)
+        run: pnpm contracts:build
+
+      # root `test` = contracts + issuer-verifier
+      - name: Test
+        run: pnpm test
+
+      - name: Build issuer-verifier
+        run: pnpm iv:build
+
+      - name: Build wallet
+        run: pnpm wallet:build
+
+  # ---------------------------------------------------------------
+  # ai-service（pytest）
+  # 註：packages/ai-service 的 npm scripts 走 scripts/venv-python.mjs（跨平台），
+  #     但 CI 沒必要多包一層 venv，直接 pip 裝進 runner 的 Python 再跑 pytest。
+  # ---------------------------------------------------------------
+  python:
+    name: Python — ai-service
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: packages/ai-service
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: packages/ai-service/requirements.txt
+
+      - name: Install requirements
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # tests 需要 model.joblib（app 啟動時載入）
+      - name: Train model (synthetic, fixed seed)
+        run: python train.py
+
+      - name: Pytest
+        run: python -m pytest -q
+
+  # ---------------------------------------------------------------
+  # 基礎設施設定檔的靜態驗證（不啟動任何服務）
+  # ---------------------------------------------------------------
+  infra:
+    name: Infra — compose / nginx 設定驗證
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker-compose.yml
+        run: docker compose config --quiet
+
+      # nginx.conf 是 envsubst 樣板，先展開再驗（直接餵樣板會因 ${...} 未展開而誤判）
+      - name: Validate wallet nginx.conf.template
+        run: |
+          docker run --rm \
+            -e CHAINTRUST_API_KEY=ci-dummy-key \
+            -v "$PWD/packages/wallet/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro" \
+            nginxinc/nginx-unprivileged:1.27-alpine \
+            sh -c '/docker-entrypoint.sh nginx -t'

@@ -4,9 +4,9 @@
   "private": true,
   "description": "ChainTrust AI 反詐 /score 服務（Python/FastAPI）",
   "scripts": {
-    "setup": "python -m venv .venv && .venv\\Scripts\\python -m pip install -r requirements.txt",
-    "train": ".venv\\Scripts\\python train.py",
-    "test": ".venv\\Scripts\\python -m pytest -q",
-    "dev": ".venv\\Scripts\\python -m uvicorn app.main:app --reload --port 8000"
+    "setup": "node ../../scripts/venv-python.mjs --setup",
+    "train": "node ../../scripts/venv-python.mjs train.py",
+    "test": "node ../../scripts/venv-python.mjs -m pytest -q",
+    "dev": "node ../../scripts/venv-python.mjs -m uvicorn app.main:app --reload --port 8000"
   }
 }

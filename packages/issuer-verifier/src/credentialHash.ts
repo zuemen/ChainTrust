@@ -16,10 +16,14 @@ export function credentialHash(credentialId: string): string {
  * 兩者皆回傳 checksum 格式的位址，讓信任查詢與 DID 方法解耦。
  */
 export function issuerAddressFromIdentifier(identifier: IIdentifier): string {
-  const did = identifier.did;
-  // did:ethr:<network?>:0x....
-  const ethrMatch = did.match(/did:ethr:(?:[^:]+:)?(0x[0-9a-fA-F]{40})$/);
-  if (ethrMatch) return getAddress(ethrMatch[1]);
+  // 取 canonical DID（去 fragment/query/path）後再依 method 分派，正則兩端錨定。
+  // 未錨定的正則會讓 did:key:z<攻擊者公鑰>#did:ethr:0x<受信任位址> 被誤判為 did:ethr。
+  const did = identifier.did.split("#")[0].split("?")[0].split("/")[0];
+  if (did.startsWith("did:ethr:")) {
+    const ethrMatch = did.match(/^did:ethr:(?:[a-zA-Z0-9_.%-]+:)*(0x[0-9a-fA-F]{40})$/);
+    if (!ethrMatch) throw new Error(`did:ethr 格式不合法：${did}`);
+    return getAddress(ethrMatch[1]);
+  }
 
   // did:key → 由 Secp256k1 公鑰推導
   const key = identifier.keys.find((k) => k.type === "Secp256k1");

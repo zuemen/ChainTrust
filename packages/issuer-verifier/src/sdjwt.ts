@@ -89,6 +89,23 @@ function jwkFromDidKey(did: string): { kty: string; crv: string; x: string; y: s
   return { kty: "EC", crv: "secp256k1", x, y };
 }
 
+/**
+ * holderDid 是否為本系統可用的 did:key（Secp256k1）。
+ *
+ * 給 HTTP 層在簽發前擋掉格式錯誤的輸入：沒有這道檢查，錯字或截斷的 DID
+ * 會一路走到簽發流程深處才丟例外，呼叫端只拿得到一個沒有資訊的 500，
+ * 與稽核既有原則（輸入錯誤回 400 並附原因）不一致。
+ */
+export function isValidHolderDid(did: unknown): did is string {
+  if (typeof did !== "string" || !did.startsWith("did:key:")) return false;
+  try {
+    jwkFromDidKey(did);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** 由 cnf JWK 推 ETH 位址（驗 KB 簽章用） */
 function addrFromJwk(jwk: { x: string; y: string }): string {
   const x = Buffer.from(jwk.x, "base64url").toString("hex").padStart(64, "0");
@@ -124,6 +141,11 @@ function holderVerifierInstance(): SDJwtVcInstance {
 }
 
 // ── 對外 API ──────────────────────────────────────────────
+/** KYC 憑證有效期：180 天 */
+export const KYC_VALIDITY_SEC = 180 * 24 * 3600;
+/** 信譽憑證有效期：90 天（繳費行為變動較快） */
+export const REPUTATION_VALIDITY_SEC = 90 * 24 * 3600;
+
 export interface IssueKycSdJwtInput {
   issuer: IIdentifier;
   holderDid: string;
@@ -144,16 +166,21 @@ export async function issueKycSdJwt(input: IssueKycSdJwtInput, agent: ChainTrust
 
   const id = `urn:uuid:${randomUUID()}`;
   const s = input.subject ?? {};
+  const iat = Math.floor(Date.now() / 1000);
   const payload = {
     iss: input.issuer.did,
-    iat: Math.floor(Date.now() / 1000),
+    iat,
+    // KYC 資料有時效（住址、風險等級會變）。沒有 exp 的憑證只能靠主動上鏈撤銷失效，
+    // 而撤銷需要 issuer 察覺並付 gas —— 等於實務上永不過期。
+    exp: iat + KYC_VALIDITY_SEC,
     vct: "KYCCredential",
     sub: input.holderDid,
     jti: id,
+    // demo 預設值明確標示為展示資料：KYC 系統的預設不應該是「已通過最高等級驗證」
     kycLevel: s.kycLevel ?? 2,
     over18: s.over18 ?? true,
     country: s.country ?? "TW",
-    fullName: s.fullName ?? "王小明",
+    fullName: s.fullName ?? "DEMO-USER（示範資料）",
     birthDate: s.birthDate ?? "1990-01-01",
     // 常駐可見，供 verifier 查鏈上撤銷
     credentialStatus: {
@@ -201,9 +228,11 @@ export async function issueReputationSdJwt(
     (await new MockBillingHistoryAdapter().getBillingSummary(input.msisdn ?? "0912345678"));
   const sdjwt = issuerInstance(agent, kid);
   const id = `urn:uuid:${randomUUID()}`;
+  const iat = Math.floor(Date.now() / 1000);
   const payload = {
     iss: input.issuer.did,
-    iat: Math.floor(Date.now() / 1000),
+    iat,
+    exp: iat + REPUTATION_VALIDITY_SEC,
     vct: "FinancialReputationCredential",
     sub: input.holderDid,
     jti: id,
@@ -276,7 +305,7 @@ function verifyKeyBinding(
   kbJwt: string | null,
   core: string,
   payload: Record<string, any>,
-  opts?: { expectedAud?: string; expectedNonce?: string; maxAgeSec?: number }
+  opts: { expectedAud: string; expectedNonce: string; maxAgeSec?: number; clockSkewSec?: number }
 ): KbVerifyResult {
   if (!kbJwt) return { ok: false, reason: "缺 key binding（KB-JWT）" };
   const parts = kbJwt.split(".");
@@ -290,6 +319,8 @@ function verifyKeyBinding(
     return { ok: false, reason: "KB-JWT 解析失敗" };
   }
   if (header?.typ !== KB_TYP) return { ok: false, reason: "KB typ 非 kb+jwt" };
+  // 明確斷言 alg：不要依賴「verifyES256K 剛好只認 ES256K」這個實作巧合擋下 alg confusion。
+  if (header?.alg !== "ES256K") return { ok: false, reason: `KB alg 非 ES256K：${String(header?.alg)}` };
 
   const jwk = payload?.cnf?.jwk;
   if (!jwk) return { ok: false, reason: "SD-JWT 缺 cnf（未綁定持有者）" };
@@ -300,16 +331,23 @@ function verifyKeyBinding(
   if (kbPayload?.sd_hash !== sdHash(core)) {
     return { ok: false, reason: "sd_hash 不符（出示內容遭竄改）" };
   }
-  if (opts?.expectedAud != null && kbPayload?.aud !== opts.expectedAud) {
+  // aud / nonce 為必比對項：驗證方策略不可因為呼叫端沒傳而靜默略過。
+  if (kbPayload?.aud !== opts.expectedAud) {
     return { ok: false, reason: "aud 不符（出示對象錯誤）" };
   }
-  if (opts?.expectedNonce != null && kbPayload?.nonce !== opts.expectedNonce) {
+  if (kbPayload?.nonce !== opts.expectedNonce) {
     return { ok: false, reason: "nonce 不符（可能為重放）" };
   }
-  const maxAge = opts?.maxAgeSec ?? 300;
-  if (typeof kbPayload?.iat === "number" && Date.now() / 1000 - kbPayload.iat > maxAge) {
-    return { ok: false, reason: "KB-JWT 已過期" };
+  // iat 必填且必須是 number：舊版用 `typeof === "number" &&` 短路，
+  // 導致缺 iat 或把 iat 設在未來時整個新鮮度檢查被跳過，出示可無限期重放。
+  const maxAge = opts.maxAgeSec ?? 300;
+  const skew = opts.clockSkewSec ?? 60;
+  if (typeof kbPayload?.iat !== "number" || !Number.isFinite(kbPayload.iat)) {
+    return { ok: false, reason: "KB-JWT 缺 iat（無法判斷新鮮度）" };
   }
+  const ageSec = Date.now() / 1000 - kbPayload.iat;
+  if (ageSec > maxAge) return { ok: false, reason: "KB-JWT 已過期" };
+  if (ageSec < -skew) return { ok: false, reason: "KB-JWT iat 位於未來（超出容許時鐘偏移）" };
   return { ok: true };
 }
 
@@ -318,7 +356,11 @@ export interface SdJwtVerifyChecks {
   trustedIssuer: boolean;
   notRevoked: boolean;
   predicate: boolean;
-  /** 階段 B：持有者 key binding（僅在出示含 KB 或要求 KB 時出現） */
+  /** 憑證型別（vct）符合驗證情境所要求的型別 */
+  credentialType?: boolean;
+  /** 有效期（exp/nbf）檢查 */
+  notExpired?: boolean;
+  /** 階段 B：持有者 key binding（一律必驗） */
   keyBinding?: boolean;
 }
 export interface SdJwtVerifyResult {
@@ -339,10 +381,18 @@ interface SdJwtPredicate {
   failReason: (payload: Record<string, any>) => string;
 }
 
+/**
+ * 驗證方策略。
+ *
+ * 安全關鍵：`expectedAud` / `expectedNonce` 為**必填**。
+ * 舊版是選填且由 HTTP request body 帶入，攻擊者只要不傳這兩個欄位、
+ * 並拿掉出示尾端的 KB-JWT，key binding 與 nonce 防重放整條防線就被關閉
+ * （`requireKeyBinding || kbJwt` 兩者皆假 ⇒ 整段跳過）。
+ * 現在 KB 一律必驗，策略只能由伺服器端決定。
+ */
 interface SdJwtKbOpts {
-  requireKeyBinding?: boolean;
-  expectedAud?: string;
-  expectedNonce?: string;
+  expectedAud: string;
+  expectedNonce: string;
 }
 
 /**
@@ -358,7 +408,8 @@ async function verifySdJwtPresentation(
   presentation: string,
   sdClaims: readonly string[],
   predicate: SdJwtPredicate,
-  opts?: SdJwtKbOpts
+  expectedVct: string,
+  opts: SdJwtKbOpts
 ): Promise<SdJwtVerifyResult> {
   const checks: SdJwtVerifyChecks = {
     signature: false,
@@ -366,6 +417,9 @@ async function verifySdJwtPresentation(
     notRevoked: false,
     predicate: false,
   };
+  if (typeof presentation !== "string" || presentation.length === 0) {
+    return { ok: false, checks, disclosed: [], withheld: [...sdClaims], reason: "presentation 必須是非空字串" };
+  }
   const sdjwt = holderVerifierInstance();
 
   // 分離 KB-JWT（最後一段若含 "." 即為 KB-JWT；disclosure 為單段 base64url 無 "."）
@@ -396,6 +450,34 @@ async function verifySdJwtPresentation(
   const disclosed = sdClaims.filter((k) => k in payload);
   const withheld = sdClaims.filter((k) => !(k in payload));
 
+  // 1.5) 憑證型別：不驗 vct 的話，任何受信任 issuer 簽發的**其他型別**憑證
+  //      只要 payload 裡剛好有數值型 kycLevel 就會被當成 KYC 憑證接受。
+  checks.credentialType = payload.vct === expectedVct;
+  if (!checks.credentialType) {
+    return {
+      ok: false,
+      checks,
+      disclosed,
+      withheld,
+      reason: `憑證型別不符：期望 ${expectedVct}，實得 ${String(payload.vct)}`,
+    };
+  }
+
+  // 1.6) 有效期：簽發端已補上 exp，這裡明確檢查（過期憑證不得通過）
+  const nowSec = Math.floor(Date.now() / 1000);
+  const skewSec = 60;
+  if (payload.exp != null) {
+    if (typeof payload.exp !== "number" || nowSec - skewSec > payload.exp) {
+      checks.notExpired = false;
+      return { ok: false, checks, disclosed, withheld, reason: "憑證已過期（exp）" };
+    }
+  }
+  if (payload.nbf != null && (typeof payload.nbf !== "number" || nowSec + skewSec < payload.nbf)) {
+    checks.notExpired = false;
+    return { ok: false, checks, disclosed, withheld, reason: "憑證尚未生效（nbf）" };
+  }
+  checks.notExpired = true;
+
   // 2)+3) 信任根 + 撤銷（與 verifier.ts 共用 helper）
   const tr = await checkTrustAndRevocation(
     chain,
@@ -423,11 +505,11 @@ async function verifySdJwtPresentation(
     };
   }
 
-  // 5) 階段 B：key binding（出示含 KB 或要求 KB 時驗證）
-  if (opts?.requireKeyBinding || kbJwt) {
+  // 5) key binding：一律必驗（缺 KB-JWT 即失敗），aud/nonce 由伺服器策略帶入
+  {
     const kbRes = verifyKeyBinding(kbJwt, core, payload, {
-      expectedAud: opts?.expectedAud,
-      expectedNonce: opts?.expectedNonce,
+      expectedAud: opts.expectedAud,
+      expectedNonce: opts.expectedNonce,
     });
     checks.keyBinding = kbRes.ok;
     if (!kbRes.ok) {
@@ -450,9 +532,9 @@ async function verifySdJwtPresentation(
 export async function verifyKycSdJwtPresentation(
   chain: ChainGateway,
   presentation: string,
-  opts?: { minKycLevel?: number } & SdJwtKbOpts
+  opts: { minKycLevel?: number } & SdJwtKbOpts
 ): Promise<SdJwtVerifyResult> {
-  const minLevel = opts?.minKycLevel ?? 2;
+  const minLevel = opts.minKycLevel ?? 2;
   return verifySdJwtPresentation(
     chain,
     presentation,
@@ -462,6 +544,7 @@ export async function verifyKycSdJwtPresentation(
       failReason: (p) =>
         `述詞未滿足：需 kycLevel>=${minLevel}（揭露值：${p.kycLevel ?? "未揭露"}）`,
     },
+    "KYCCredential",
     opts
   );
 }
@@ -470,9 +553,9 @@ export async function verifyKycSdJwtPresentation(
 export async function verifyReputationSdJwtPresentation(
   chain: ChainGateway,
   presentation: string,
-  opts?: { minTier?: number } & SdJwtKbOpts
+  opts: { minTier?: number } & SdJwtKbOpts
 ): Promise<SdJwtVerifyResult> {
-  const minTier = opts?.minTier ?? 2;
+  const minTier = opts.minTier ?? 2;
   return verifySdJwtPresentation(
     chain,
     presentation,
@@ -482,6 +565,7 @@ export async function verifyReputationSdJwtPresentation(
       failReason: (p) =>
         `述詞未滿足：需 reputationTier>=${minTier}（揭露值：${p.reputationTier ?? "未揭露"}）`,
     },
+    "FinancialReputationCredential",
     opts
   );
 }

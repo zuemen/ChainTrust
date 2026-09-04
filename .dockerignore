@@ -5,8 +5,26 @@
 **/*.joblib
 **/data
 .git
-**/.env
 **/coverage
 packages/contracts/artifacts
 packages/contracts/cache
 packages/contracts/typechain-types
+
+# === 機密：絕不進映像層 ===
+**/.env
+**/.env.*
+!**/.env.example
+# Veramo 本地金鑰庫（含私鑰）—— 進了映像等於把 issuer 私鑰發佈出去
+**/*.sqlite
+**/*.sqlite3
+**/agent.db
+**/.veramo
+**/*.key
+**/*.pem
+secrets/
+keystore/
+
+# === 不需要進 build context 的東西（縮小 context、避免誤打包）===
+proposal/
+docs/
+.github/

@@ -5,9 +5,12 @@
 """
 from __future__ import annotations
 
+import logging
 import math
 import os
 from typing import Any, Mapping
+
+logger = logging.getLogger(__name__)
 
 from .featurize import FEATURE_ORDER, vectorize, feature_label
 from .rules import rule_risk, reason_codes, WEIGHTS, REASON_LABELS
@@ -31,11 +34,22 @@ def _load() -> dict[str, Any] | None:
     if _load_attempted:
         return _bundle
     _load_attempted = True
+    if not os.path.exists(MODEL_PATH):
+        # 不是錯誤（規則 baseline 是設計內的退路），但要能看見自己跑在退化路徑上
+        logger.warning(
+            "找不到模型檔 %s → /score 降級為規則 baseline（source=\"rules\"）", MODEL_PATH
+        )
+        return None
     try:
         import joblib  # 延遲匯入，無 ML 相依也能用規則
-        if os.path.exists(MODEL_PATH):
-            _bundle = joblib.load(MODEL_PATH)
+        _bundle = joblib.load(MODEL_PATH)
     except Exception:
+        # 先前這裡是 bare except 靜默吞掉：模型壞掉/版本不相容時會無聲降級成規則模式，
+        # 服務照樣回 200，運維端完全看不出來。改成把 traceback 記下來。
+        logger.exception(
+            "模型載入失敗（MODEL_PATH=%s）→ /score 降級為規則 baseline（source=\"rules\"）",
+            MODEL_PATH,
+        )
         _bundle = None
     return _bundle
 

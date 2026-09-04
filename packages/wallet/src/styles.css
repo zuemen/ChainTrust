@@ -147,8 +147,75 @@ code { font-family: ui-monospace, "Cascadia Code", monospace; font-size: 12px; c
 .lift b { color: var(--ok); }
 .trust-foot { font-size: 11px; color: var(--muted); margin: 12px 0 0; line-height: 1.6; }
 
-.banner { border-radius: 10px; padding: 10px 14px; font-size: 13px; margin-bottom: 14px; }
+.banner { border-radius: 10px; padding: 10px 14px; font-size: 13px; margin-bottom: 14px; line-height: 1.6; position: relative; }
 .banner.err { background: rgba(239,68,68,0.15); border: 1px solid var(--bad); }
 .banner.warn { background: rgba(245,158,11,0.13); border: 1px solid var(--warn); }
+.banner.info { background: rgba(99,102,241,0.14); border: 1px solid var(--brand2); }
+.banner.danger { background: rgba(239,68,68,0.14); border: 1px solid var(--bad); }
+.banner-x {
+  background: transparent; border: none; color: inherit; opacity: 0.6;
+  cursor: pointer; font-size: 13px; padding: 0 2px; margin-left: 6px;
+}
+.banner-x:hover { opacity: 1; }
+
+/* 金鑰保護 / 身分閘門 */
+.gate p { font-size: 13.5px; }
+.field { display: grid; gap: 6px; margin: 12px 0; }
+.field > label { font-size: 12px; color: var(--muted); }
+.input {
+  background: #0e1530; border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 12px; color: var(--txt); font-size: 14px; font-family: inherit; width: 100%;
+}
+.input:focus { outline: none; border-color: var(--brand2); }
+.input:disabled { opacity: 0.5; }
+.field-err { margin: 0; font-size: 12px; color: #ffb4b4; }
+
+.key-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.btn.danger { background: rgba(239,68,68,0.16); color: #ffd0d0; border: 1px solid var(--bad); }
+.btn.danger:hover { background: rgba(239,68,68,0.28); }
+.btn.danger:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn.link { background: transparent; border: none; color: var(--brand2); padding: 8px 0; text-decoration: underline; }
+.btn.tiny { padding: 5px 10px; font-size: 12px; background: rgba(255,255,255,0.08); color: var(--txt); border: 1px solid var(--line); margin-left: 8px; }
+.demo-escape { margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 10px; }
+
+.tag.ok { color: #c8f7d4; border-color: rgba(34,197,94,0.6); }
+.tag.danger { color: #ffd0d0; border-color: rgba(239,68,68,0.6); }
+
+/* what-you-see-is-what-you-sign */
+.signing-target {
+  background: #0e1530; border: 1px solid var(--brand2); border-radius: 10px;
+  padding: 12px 14px; margin: 12px 0; display: grid; gap: 6px;
+}
+.st-title { font-size: 12.5px; color: var(--muted); margin-bottom: 2px; }
+.st-row { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; }
+.st-row > span { color: var(--muted); white-space: nowrap; }
+.st-row code, .st-row b { overflow-wrap: anywhere; text-align: right; }
+
+/* 憑證本機驗證結果 */
+.validation { font-size: 12.5px; border-radius: 10px; padding: 8px 12px; margin: 10px 0; }
+.validation.ok { background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.5); color: #c8f7d4; }
+.vlist { margin: 6px 0 0; padding-left: 18px; }
+.vlist.muted { color: var(--muted); list-style: none; padding-left: 0; }
+.vlist li { margin: 3px 0; }
+
+.ack { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; margin: 12px 0; cursor: pointer; }
+.errbox {
+  background: #0e1530; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+  font-size: 12px; color: #ffd0d0; white-space: pre-wrap; overflow-wrap: anywhere; margin: 10px 0;
+}
 
 footer { text-align: center; font-size: 11px; color: var(--muted); margin-top: 22px; }
+
+/* 模型可信度報告：證據等級標籤與誠實度警語（C4 —— 合成訊號推得的增益不可當真實效度） */
+.tag.warn { color: #ffe3b0; border-color: rgba(245,158,11,0.6); }
+.ablation h3 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ablation .caveat {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #ffe3b0;
+  background: rgba(245,158,11,0.08);
+  border-left: 3px solid rgba(245,158,11,0.6);
+  padding: 8px 10px;
+  border-radius: 6px;
+}

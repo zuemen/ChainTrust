@@ -1,16 +1,24 @@
 """合成 PaySim-like 資料產生器。
 
-無 Kaggle PaySim 時的退路。**標籤由「潛在風險 logit + Bernoulli 抽樣」產生**，而非
-事先把整列標成 0/1。logit 刻意含**交互作用項（AND 組合）**與**獨立的 CHT 訊號權重**，
-忠實反映真實人頭詐欺的本質：
+無 Kaggle PaySim 時的退路。
 
-- 單一訊號（大額 / 新帳戶 / 未實名 / 換裝置）各自只是「弱訊號」，
-  但**同時出現**才構成強訊號 —— 這是線性模型抓不到、需要 GBM 才學得到的非線性結構。
-- 中華電信增益訊號（門號實名 / 裝置 / 地理 / 帳戶年齡 / 收款方風險）帶有**獨立資訊**，
-  移除後 PR-AUC 會明顯下降（train.py 的 CHT 消融會量化此增益）。
+**標籤產生方式（H16：以下描述與 `generate()` 實作一致，請勿再寫成「logit + Bernoulli」）**：
+`generate()` **先決定每一列屬於哪一類（正常 / 詐欺 A / 詐欺 B / 詐欺 C），再依該類的
+分佈抽特徵，並把 `isFraud` 硬寫成 0 或 1**。沒有潛在風險 logit，也沒有 Bernoulli
+抽樣決定標籤。唯一的標籤隨機性是**產生完之後**對約 1.5% 的列做隨機標籤翻轉
+（`generate()` 尾端），用來避免資料完美可分。
 
-特徵分佈高度重疊 + Bernoulli 抽樣雜訊，使 holdout PR-AUC 真實（~0.85–0.92，非 1.0）。
-含時間欄 `step` 供 out-of-time 切分。
+也就是說：特徵是「以標籤為條件」抽出來的（label-conditioned），這是合成資料的
+常態做法，但同時代表——
+
+- 特徵與標籤的關聯強度是**我們自己設定的參數**，不是從真實世界量到的。
+- 任何在這份資料上算出的「訊號增益 / 消融 lift」，量的是**我們注入了多少標籤資訊**，
+  不是該訊號在真實金流中的價值。詳見 `augment_cht_signals()` 的 docstring 與
+  `metrics.json` 的 `cht_signal_ablation.caveat`。
+
+刻意設計的難度來源（讓 holdout PR-AUC 落在 ~0.85–0.92 而非 1.0）：詐欺與正常的特徵
+分佈**高度重疊**（正常戶也會出現大額 / 新帳戶 / 未實名等單一風險邊際），加上 1.5%
+標籤翻轉噪音。含時間欄 `step` 供 out-of-time 切分。
 
 要換真資料：把 PaySim CSV 放到 data/paysim.csv，train.py 會優先使用。
 """
@@ -26,10 +34,6 @@ sys.path.insert(0, os.path.dirname(__file__))
 from app.featurize import featurize  # noqa: E402
 
 TYPES = ["CASH_IN", "CASH_OUT", "DEBIT", "PAYMENT", "TRANSFER"]
-
-
-def _sigmoid(z: np.ndarray) -> np.ndarray:
-    return 1.0 / (1.0 + np.exp(-z))
 
 
 def generate(n: int = 40_000, fraud_ratio: float = 0.08, seed: int = 42) -> pd.DataFrame:
@@ -162,17 +166,57 @@ def generate(n: int = 40_000, fraud_ratio: float = 0.08, seed: int = 42) -> pd.D
     return df.sample(frac=1.0, random_state=seed).reset_index(drop=True)
 
 
-# 供 train.py 對「真 PaySim」補上 ChainTrust 增益訊號（PaySim 本身沒有這些欄位）。
-# 注意：半合成 —— 交易詐欺訊號來自真資料；電信/裝置/地理訊號為「與 isFraud 相關」的模擬注入。
+# 真 PaySim 缺少的 ChainTrust/CHT 增益欄位清單。
 CHT_SIGNAL_COLS = [
     "tx_count_1h", "tx_count_24h", "device_changed", "mobile_realname_verified",
     "vc_age_days", "account_age_days", "cross_institution_presentations",
     "payee_risk", "geo_jump",
 ]
 
+# 呼叫端誤用時的統一錯誤訊息（C4）
+_LABEL_CONDITIONING_REFUSAL = (
+    "augment_cht_signals() 只能產生「以 isFraud 標籤為條件」的模擬訊號，"
+    "套在真實資料上等同結構性標籤洩漏。若確定是 demo/簡報用途，請明示 "
+    "allow_label_conditioning=True；若要在真實資料上補欄位，請改用 "
+    "fill_neutral_cht_signals()。"
+)
 
-def augment_cht_signals(df: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
-    """以與 isFraud 相關的分佈注入 CHT 增益訊號，使模型能學到這些差異化特徵。"""
+
+def augment_cht_signals(
+    df: pd.DataFrame,
+    seed: int = 42,
+    *,
+    allow_label_conditioning: bool,
+) -> pd.DataFrame:
+    """【DEMO ONLY／標籤洩漏】以 `isFraud` 為條件生成 9 個 CHT 增益訊號欄位。
+
+    ⚠️ **這個函式會讀 `df["isFraud"]`，並依標籤從兩組不同分佈抽樣特徵。**
+    也就是說它把答案（標籤）直接編碼進特徵裡：
+
+    - 產出的欄位對 `isFraud` 的預測力，**完全等於我們在下面硬寫的分佈差距**
+      （例如 `device_changed` 詐欺 58% vs 正常 8%），不是任何真實世界的觀測。
+    - 因此在這些欄位上做「消融實驗」（`train.py` 的 `cht_signal_ablation`）**不是**
+      在量測中華電信訊號的真實增益，而是在量**我們注入了多少標籤資訊**——循環論證。
+      任何以此為據的「+X% PR-AUC lift」都必須標註為 `evidence_grade: "simulation"`，
+      **不可以**當成真實世界效益的證據對外簡報。
+    - 這也不是可修的 bug：要證明 CHT 訊號的真實增益，唯一辦法是取得**真實**同時
+      含金流與電信/裝置/地理訊號的資料集，這超出 PoC 範圍。
+
+    合法用途只有一個：讓 demo pipeline 在沒有真實 CHT 欄位時仍能跑完、產生可視化。
+
+    Args:
+        df: 需含 `isFraud` 欄（缺則全部視為非詐欺，等同無訊號）。
+        seed: 亂數種子。
+        allow_label_conditioning: **必填**。呼叫端必須明示知道自己在注入標籤資訊；
+            傳 False（或忘了傳而踩到 TypeError）即拒絕執行。這個參數存在的目的，
+            就是讓「在真實資料上不小心套用」變成一件做不到的事。
+
+    Raises:
+        ValueError: `allow_label_conditioning` 為 False。
+    """
+    if not allow_label_conditioning:
+        raise ValueError(_LABEL_CONDITIONING_REFUSAL)
+
     rng = np.random.default_rng(seed)
     n = len(df)
     f = (df["isFraud"].to_numpy() == 1) if "isFraud" in df.columns else np.zeros(n, dtype=bool)
@@ -192,4 +236,33 @@ def augment_cht_signals(df: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
     df["cross_institution_presentations"] = np.where(f, rng.integers(3, 18, n), rng.integers(0, 7, n))
     df["tx_count_1h"] = np.where(f, rng.integers(2, 12, n), rng.integers(0, 5, n))
     df["tx_count_24h"] = np.where(f, rng.integers(10, 55, n), rng.integers(0, 15, n))
+    return df
+
+
+def fill_neutral_cht_signals(df: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
+    """在**不看標籤**的前提下補齊缺少的 CHT 欄位（真實資料的正確作法）。
+
+    每一欄都從一個**與 `isFraud` 獨立**的分佈抽樣（或給常數預設），因此這些欄位
+    對標籤的期望增益為 0。用意是讓 `FEATURE_ORDER` 維度完整、pipeline 跑得起來，
+    同時讓消融實驗誠實地顯示「沒有真實 CHT 資料時，這些欄位帶不來任何增益」。
+
+    只補 `df` 中缺少的欄位；已存在的欄位（例如資料源本來就有）一律不動。
+    """
+    rng = np.random.default_rng(seed)
+    n = len(df)
+    df = df.copy()
+    neutral = {
+        "device_changed": lambda: (rng.random(n) < 0.10).astype(int),
+        "mobile_realname_verified": lambda: (rng.random(n) < 0.85).astype(int),
+        "geo_jump": lambda: (rng.random(n) < 0.08).astype(int),
+        "payee_risk": lambda: np.clip(rng.normal(0.2, 0.12, n), 0, 1),
+        "account_age_days": lambda: rng.integers(0, 2000, n),
+        "vc_age_days": lambda: rng.integers(0, 1000, n),
+        "cross_institution_presentations": lambda: rng.integers(0, 10, n),
+        "tx_count_1h": lambda: rng.integers(0, 6, n),
+        "tx_count_24h": lambda: rng.integers(0, 20, n),
+    }
+    for col, gen in neutral.items():
+        if col not in df.columns:
+            df[col] = gen()
     return df

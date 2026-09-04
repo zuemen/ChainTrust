@@ -127,17 +127,19 @@ README 寫「**普惠財務信譽** — 無信用紀錄者也能累積可攜、�
 - [x] **CHT 產品對應表**（3.1 表格）補上實際產品調研結果（2026-07-21，含 2026-07-01 甫發布的 MID+/Open Gateway 新聞稿），每個 adapter 檔案頭已註記目標產品與預期 API 形態（`packages/issuer-verifier/src/adapters/cht.ts`、`src/chain/gateway.ts`）。
 - [x] **`ThreatIntelAdapter` 接進 `/score`**：情資命中作為加權規則（+35 分），模型模式下由 `model.py` 後處理加成、規則模式下由 `rule_risk()` 自動加總。（2026-07-21）
 - [ ] **聯邦學習最小 PoC**：兩個模擬銀行節點不交換明文、只交換梯度/模型更新（如 Flower 框架），支撐「跨機構風險共享」護城河論點。需先補 ADR。
-- [ ] **金鑰自持**：Holder 金鑰移到錢包端（瀏覽器 WebCrypto / passkey），KB-JWT 在 client 簽；並設計「門號綁定金鑰復原」流程——把架構債轉成 CHT 差異化賣點。
-- [ ] **法規對應文件**：電子簽章法/個資法/金管會沙盒/數發部數位皮夾各一段（3.2），必要處標注「待法務確認」。
+- [x] **金鑰自持**：Holder 金鑰移到錢包端，KB-JWT 在 client 簽。（2026-08-04，分支 `feat/browser-holder-keys`）
+  瀏覽器以 `@noble/curves` 產生 secp256k1 金鑰，密語經 PBKDF2-SHA256 310,000 迭代派生 AES-GCM-256 金鑰後才寫入 localStorage；明文私鑰只存在記憶體 session，鎖定即 `fill(0)` 清零。對外只匯出 `getKeyBindingSigner()`（簽章位元組固定以 `kb+jwt` header 開頭做 domain separation），不再有通用簽章 oracle。伺服器端代管路徑已全數關閉（`/sdjwt/issue`、`/sdjwt/issue-reputation` 的 holderDid 均為必填，2026-08-05）。
+  **仍未做**：「門號綁定金鑰復原」（丟手機怎麼辦）——這是 CHT 差異化賣點，目前只有密語加密備份匯出，沒有電信端復原管道。
+- [x] **法規對應文件**：`docs/regulatory-compliance.md`（2026-08-05）。含監理沙盒不得排除洗錢防制法、詐欺犯罪危害防制條例課予金融機構的義務與罰則、個資法最小揭露依據、國際標準狀態、數位憑證皮夾定位。**仍待法務確認**：金融機構防制洗錢辦法的第三方依賴要件、電子簽章法下 VC 的法律定位（見該文 §7 未查證清單）。
 - [ ] **對齊 OID4VC/OpenID4VP**：出示流程向標準協定靠攏（至少文件層面規劃遷移路徑）。
-- [ ] **商業模式 + 試點設計一頁**（3.3、3.4）。
+- [x] **商業模式 + 試點設計**：`docs/business-model.md`（2026-08-05）。收費對象、單位經濟、台灣在地市場分母、CHT 四條收入、試點 KPI（含薄檔族群分群誤判率）、三年路線。
 - [x] **Model card + 模型治理**：訓練資料/限制/偏誤/重訓節奏/漂移監控，見 `docs/model-card.md`。新發現：反詐特徵（`NEW_ACCOUNT`/`NO_REALNAME`/低 `vc_age_days`）與普惠金融目標的薄檔用戶重疊，已明確揭露為待解決張力。（2026-07-21）
 
 ### P2 — 長期（正式產品化）
 
 - [ ] StatusList2021 取代鏈上明查撤銷（隱私動機）。
 - [ ] 簽發時 issuer 簽章綁定 revocation hash（解 ADR-005 殘留的搶綁風險）。
-- [ ] CI（GitHub Actions：contracts test + iv test/e2e + pytest + smoke）。
+- [x] CI（GitHub Actions）。（2026-08-04）`.github/workflows/ci.yml` 三個 job：node（contracts compile+test、iv test、iv/wallet build，`--frozen-lockfile`）、python（先 `train.py` 再 pytest）、infra（`docker compose config` + nginx 樣板 envsubst 後 `nginx -t`）。**未納入**：e2e 與 smoke（需同時起三個服務）。
 - [ ] 對抗性測試集（規避 near_threshold、慢速過水等）與紅隊演練文件。
 - [ ] 多語系、正式 UI 設計系統、無障礙。
 - [ ] CHT BaaS 實際遷移演練（合約不變、只換 provider 的證明）。
