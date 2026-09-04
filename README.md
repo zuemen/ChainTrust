@@ -2,6 +2,26 @@
 
 SSI（自主權身分）× AI 反詐 × 區塊鏈，建構於**中華電信信任根**（PublicCA／門號電子卡）。 參賽：2026 中華電信智慧創新應用大賽 · 智慧金融組（校園組）。
 
+## 線上 Demo
+
+**打開連結就能玩：<https://chaintrust.vercel.app>** —— 不需安裝任何東西。
+
+| 元件 | 網址 |
+| :-- | :-- |
+| 錢包前端（Vercel） | <https://chaintrust.vercel.app> |
+| issuer-verifier（Render） | <https://chaintrust-iv.onrender.com> |
+| ai-service（Render） | <https://chaintrust-ai.onrender.com> |
+
+> **開始前先暖機**：Render 免費方案閒置 15 分鐘會休眠，冷啟動要等 ~50 秒。
+> 先各打一次上面兩個後端的 `/health` 再開錢包。
+>
+> **目前 `CHAIN_MODE=memory`**：issuer DID 與信任／撤銷登記只存在行程記憶體，
+> 服務一重啟就換一組、登記清空。五步 demo 請當成一條連續流程跑完。
+> 要根治請改走 Amoy 上鏈（`CHAIN_MODE=ethers`），見
+> [`docs/amoy-deploy-checklist.md`](docs/amoy-deploy-checklist.md)。
+>
+> 部署方式與架構取捨見 [`docs/vercel-deploy.md`](docs/vercel-deploy.md)。
+
 ## 這是什麼
 
 一個金融級的**自主權身分錢包**：用 DID／可驗證憑證（VC）做到「**一次 KYC、跨機構重用**」，內建 **AI 反詐引擎**即時阻斷人頭帳戶與身分盜用，並以中華電信 PublicCA／門號電子卡作為「信任根」。

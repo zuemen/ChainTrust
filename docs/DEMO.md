@@ -15,7 +15,16 @@ pnpm demo                          # 同時起 ai(:8000)+iv(:3001)+wallet(:5173)
 docker compose up --build          # → http://localhost:5173
 ```
 
-開瀏覽器：**http://localhost:5173**
+**方式 C：線上（免安裝，評審用）**
+
+直接開 **<https://chaintrust.vercel.app>**。
+
+> 後端在 Render 免費方案，閒置 15 分鐘會休眠。開始前先各打一次
+> <https://chaintrust-iv.onrender.com/health> 與 <https://chaintrust-ai.onrender.com/health>
+> 暖機（各約 50 秒）。另外 `CHAIN_MODE=memory`，服務重啟會換一組 issuer DID 並清空
+> 信任／撤銷登記，所以五步請連續跑完，中途不要停超過 15 分鐘。
+
+方式 A／B 開瀏覽器：**http://localhost:5173**
 
 > 一鍵自動驗證（不開瀏覽器也能證明五步通）：另開終端機 `pnpm smoke`。
 
