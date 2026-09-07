@@ -39,6 +39,50 @@ export interface RiskAssessment {
   top_factors?: TopFactor[];
 }
 
+
+/**
+ * 冷啟動期間的閘道錯誤：PaaS 的路由層在容器還沒 ready 時會「立刻」回這些狀態碼，
+ * 而不是把連線掛著等。因此單純把逾時拉長救不了——必須重試。
+ */
+const GATEWAY_WAKING = new Set([502, 503, 504]);
+
+/**
+ * 會等待上游冷啟動的 fetch。
+ *
+ * 免費方案的 PaaS 閒置會休眠，冷啟動實測 33 秒；期間路由層立刻回 502。
+ * 本函式在總時間預算內反覆重試（網路錯誤與 502/503/504 都算「還在開機」），
+ * 讓睡著的服務有機會被喚醒，而不是第一個 502 就宣告失敗。
+ */
+async function fetchAwaitingWake(
+  url: string,
+  init: RequestInit,
+  o: { budgetMs: number; attemptMs: number; gapMs?: number; fetchImpl: typeof fetch }
+): Promise<{ res?: Response; reason?: string }> {
+  const deadline = Date.now() + o.budgetMs;
+  // 重試間隔隨預算縮放：預算小的時候用小間隔，才不會「只夠試一次」。
+  const gap = Math.min(o.gapMs ?? 3000, Math.max(200, Math.floor(o.budgetMs / 6)));
+  let last = "unreachable";
+  do {
+    const controller = new AbortController();
+    const attempt = Math.min(o.attemptMs, Math.max(1, deadline - Date.now()));
+    const timer = setTimeout(() => controller.abort(), attempt);
+    try {
+      const res = await o.fetchImpl(url, { ...init, signal: controller.signal });
+      if (res.ok) return { res };
+      last = `http_${res.status}`;
+      // 非閘道類錯誤（400/401/500…）是上游的真實回應，重試沒有意義。
+      if (!GATEWAY_WAKING.has(res.status)) return { res, reason: last };
+    } catch (e: unknown) {
+      last = e instanceof Error && e.name === "AbortError" ? "timeout" : "unreachable";
+    } finally {
+      clearTimeout(timer);
+    }
+    if (Date.now() + gap >= deadline) break;
+    await new Promise((r) => setTimeout(r, gap));
+  } while (Date.now() < deadline);
+  return { reason: last };
+}
+
 /**
  * 呼叫 AI 反詐服務 POST /score。
  * 服務不可用時不擋驗證流程：回 decision="review" 並標記 FRAUD_SERVICE_UNAVAILABLE。
@@ -54,8 +98,7 @@ export async function scoreTransaction(
 ): Promise<RiskAssessment> {
   const baseUrl = opts?.baseUrl ?? config.aiServiceUrl;
   const doFetch = opts?.fetchImpl ?? fetch;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? config.aiTimeoutMs);
+  const budget = opts?.timeoutMs ?? config.aiTimeoutMs;
   try {
     let body: TxContext & { threat_intel_hit?: boolean } = ctx;
     if (ctx.payee_account_id) {
@@ -63,26 +106,24 @@ export async function scoreTransaction(
       const intel = await adapter.lookup(ctx.payee_account_id);
       body = { ...ctx, threat_intel_hit: intel.hit };
     }
-    const res = await doFetch(`${baseUrl}/score`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    if (!res.ok) {
-      return { risk: null, decision: "review", reasons: [`FRAUD_HTTP_${res.status}`], source: "unavailable" };
+    // 使用者正在等驗證結果，預算要有上限；預算內遇到冷啟動的 502 仍會重試。
+    const { res, reason } = await fetchAwaitingWake(
+      `${baseUrl}/score`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+      { budgetMs: budget, attemptMs: Math.min(budget, 8000), gapMs: 1500, fetchImpl: doFetch }
+    );
+    if (!res || !res.ok) {
+      const code = reason && reason.startsWith("http_") ? `FRAUD_HTTP_${reason.slice(5)}` : "FRAUD_SERVICE_UNAVAILABLE";
+      return { risk: null, decision: "review", reasons: [code], source: "unavailable" };
     }
-    const responseBody = (await res.json()) as RiskAssessment;
-    return responseBody;
-  } catch (e: any) {
+    return (await res.json()) as RiskAssessment;
+  } catch {
     return {
       risk: null,
       decision: "review",
       reasons: ["FRAUD_SERVICE_UNAVAILABLE"],
       source: "unavailable",
     };
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -92,20 +133,18 @@ export async function fetchMetrics(
 ): Promise<{ available: boolean; model_loaded?: boolean; metrics?: unknown; reason?: string }> {
   const baseUrl = opts?.baseUrl ?? config.aiServiceUrl;
   const doFetch = opts?.fetchImpl ?? fetch;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? config.aiMetricsTimeoutMs);
-  try {
-    const res = await doFetch(`${baseUrl}/metrics`, { signal: controller.signal });
-    // 帶上 reason：部署後只看到 available:false 無從判斷是網址設錯、服務睡著
-    // 還是模型沒載入，排查時只能靠猜。
-    if (!res.ok) return { available: false, reason: `http_${res.status}` };
-    return (await res.json()) as { available: boolean; model_loaded?: boolean; metrics?: unknown };
-  } catch (e: unknown) {
-    const aborted = e instanceof Error && e.name === "AbortError";
-    return { available: false, reason: aborted ? "timeout" : "unreachable" };
-  } finally {
-    clearTimeout(timer);
-  }
+  const budget = opts?.timeoutMs ?? config.aiMetricsTimeoutMs;
+  // 這條路徑沒有人在等，預算放長並允許重試，同時擔任「叫醒睡著的 AI」的角色。
+  const { res, reason } = await fetchAwaitingWake(`${baseUrl}/metrics`, {}, {
+    budgetMs: budget,
+    attemptMs: Math.min(budget, 15000),
+    gapMs: 3000,
+    fetchImpl: doFetch,
+  });
+  // 帶上 reason：部署後只看到 available:false 無從判斷是網址設錯、服務睡著
+  // 還是模型沒載入，排查時只能靠猜。
+  if (!res || !res.ok) return { available: false, reason: reason ?? "unreachable" };
+  return (await res.json()) as { available: boolean; model_loaded?: boolean; metrics?: unknown };
 }
 
 /**
@@ -118,14 +157,12 @@ export async function warmUpFraudService(
 ): Promise<boolean> {
   const baseUrl = opts?.baseUrl ?? config.aiServiceUrl;
   const doFetch = opts?.fetchImpl ?? fetch;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? config.aiWarmupTimeoutMs);
-  try {
-    const res = await doFetch(`${baseUrl}/health`, { signal: controller.signal });
-    return res.ok;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
-  }
+  const budget = opts?.timeoutMs ?? config.aiWarmupTimeoutMs;
+  const { res } = await fetchAwaitingWake(`${baseUrl}/health`, {}, {
+    budgetMs: budget,
+    attemptMs: Math.min(budget, 15000),
+    gapMs: 3000,
+    fetchImpl: doFetch,
+  });
+  return !!res && res.ok;
 }

@@ -129,9 +129,9 @@ describe("AI 服務冷啟動韌性", () => {
     const dead = (async () => {
       throw new Error("ECONNREFUSED");
     }) as unknown as typeof fetch;
-    expect((await fetchMetrics({ baseUrl: "http://x", fetchImpl: dead })).reason).toBe("unreachable");
+    expect((await fetchMetrics({ baseUrl: "http://x", timeoutMs: 300, fetchImpl: dead })).reason).toBe("unreachable");
 
-    expect((await fetchMetrics({ baseUrl: "http://x", fetchImpl: mockFetch(502, {}) })).reason).toBe("http_502");
+    expect((await fetchMetrics({ baseUrl: "http://x", timeoutMs: 300, fetchImpl: mockFetch(502, {}) })).reason).toBe("http_502");
   });
 
   it("暖機成功回 true、失敗回 false 且不拋錯（純盡力而為）", async () => {
@@ -140,6 +140,56 @@ describe("AI 服務冷啟動韌性", () => {
     const dead = (async () => {
       throw new Error("ECONNREFUSED");
     }) as unknown as typeof fetch;
-    expect(await warmUpFraudService({ baseUrl: "http://x", fetchImpl: dead })).toBe(false);
+    expect(await warmUpFraudService({ baseUrl: "http://x", timeoutMs: 300, fetchImpl: dead })).toBe(false);
+  });
+});
+
+/**
+ * 冷啟動的第二種形態：PaaS 路由層在容器開機期間「立刻」回 502，不是把連線掛著。
+ * 因此只把逾時拉長沒有用（第一個 502 就會被當成失敗），必須在預算內重試。
+ * 線上實測就是踩到這個：/metrics 回 http_502 而非 timeout。
+ */
+describe("冷啟動 502 重試", () => {
+  /** 前 n 次回 502，第 n+1 次才 200 —— 模擬容器開機完成。 */
+  function wakingFetch(failures: number, body: unknown) {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      if (calls <= failures) return { ok: false, status: 502, json: async () => ({}) } as Response;
+      return { ok: true, status: 200, json: async () => body } as Response;
+    }) as unknown as typeof fetch;
+    return { fetchImpl, count: () => calls };
+  }
+
+  it("metrics：前兩次 502、第三次成功 → 最終回 available（不是第一個 502 就放棄）", async () => {
+    const w = wakingFetch(2, { available: true, model_loaded: true });
+    const r = await fetchMetrics({ baseUrl: "http://x", timeoutMs: 3000, fetchImpl: w.fetchImpl });
+    expect(r.available).toBe(true);
+    expect(w.count()).toBe(3);
+  });
+
+  it("score：冷啟動期間的 502 會重試，醒來後拿到真實評分", async () => {
+    const w = wakingFetch(1, { risk: 98, decision: "block", reasons: ["MULE_PATTERN"], source: "model" });
+    const r = await scoreTransaction({}, { baseUrl: "http://x", timeoutMs: 3000, fetchImpl: w.fetchImpl });
+    expect(r.decision).toBe("block");
+    expect(r.source).toBe("model");
+  });
+
+  it("非閘道類錯誤（400）不重試——那是上游的真實回應，重試沒有意義", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      return { ok: false, status: 400, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+    const r = await scoreTransaction({}, { baseUrl: "http://x", timeoutMs: 3000, fetchImpl });
+    expect(calls).toBe(1);
+    expect(r.reasons[0]).toContain("FRAUD_HTTP_400");
+  });
+
+  it("預算耗盡仍失敗 → 降級成 review 而非拋錯（不擋驗證流程）", async () => {
+    const alwaysDown = (async () => ({ ok: false, status: 502, json: async () => ({}) }) as Response) as unknown as typeof fetch;
+    const r = await scoreTransaction({}, { baseUrl: "http://x", timeoutMs: 900, fetchImpl: alwaysDown });
+    expect(r.decision).toBe("review");
+    expect(r.source).toBe("unavailable");
   });
 });
