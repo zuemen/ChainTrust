@@ -124,6 +124,95 @@ function Orientation({ step }: { step: 1 | 2 | 3 }) {
   );
 }
 
+/* ─────────────────────────────────────────────────────────────
+   內嵌 SVG 圖示組。
+   不用 emoji：emoji 的字形由作業系統決定，跨平台長相不一致、
+   無法隨主題調色，也無法對齊文字基線——在金融產品上會直接減損可信度。
+   全組統一 stroke 1.75、currentColor，尺寸由 CSS 控制。
+   ───────────────────────────────────────────────────────────── */
+type IcoProps = { className?: string };
+const svg = (d: React.ReactNode, extra?: string) => ({ className }: IcoProps) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+    style={extra ? undefined : undefined}>
+    {d}
+  </svg>
+);
+
+const IcoShield = svg(<><path d="M12 3l7 3v6c0 4.2-2.9 7.8-7 9-4.1-1.2-7-4.8-7-9V6l7-3z" /><path d="M9.2 12.2l2 2 3.6-3.9" /></>);
+const IcoLock = svg(<><rect x="4.5" y="10.5" width="15" height="10" rx="2" /><path d="M8 10.5V7.5a4 4 0 018 0v3" /></>);
+const IcoUnlock = svg(<><rect x="4.5" y="10.5" width="15" height="10" rx="2" /><path d="M8 10.5V7.5a4 4 0 017.5-2" /></>);
+const IcoCheck = svg(<path d="M4.5 12.5l5 5 10-11" />);
+const IcoX = svg(<><path d="M6 6l12 12" /><path d="M18 6L6 18" /></>);
+const IcoAlert = svg(<><path d="M12 4.5l8.5 15h-17l8.5-15z" /><path d="M12 10v4" /><circle cx="12" cy="16.8" r=".9" fill="currentColor" stroke="none" /></>);
+const IcoInfo = svg(<><circle cx="12" cy="12" r="8.5" /><path d="M12 11v5.5" /><circle cx="12" cy="8" r=".9" fill="currentColor" stroke="none" /></>);
+const IcoClock = svg(<><circle cx="12" cy="12" r="8.5" /><path d="M12 7v5.2l3.2 2" /></>);
+const IcoBan = svg(<><circle cx="12" cy="12" r="8.5" /><path d="M6.2 6.2l11.6 11.6" /></>);
+const IcoCard = svg(<><rect x="3" y="5.5" width="18" height="13" rx="2" /><path d="M3 10h18" /><path d="M7 14.5h4" /></>);
+
+/**
+ * 左側常駐欄（桌機）。
+ *
+ * 原本身分與憑證狀態散在整條長捲軸裡，操作到一半得往回捲才知道自己有什麼。
+ * 把「我是誰」與「我持有哪些憑證」固定在視野內，是這類錢包/主控台產品的常規做法，
+ * 也讓右側主區可以專心呈現當下這一步。
+ */
+function Rail({ did, protection, issuerDid, has }: {
+  did: string;
+  protection: string;
+  issuerDid: string;
+  has: { kyc: boolean; mobile: boolean; rep: boolean };
+}) {
+  const items = [
+    { key: "kyc", label: "KYC 憑證", have: has.kyc, from: "銀行 A" },
+    { key: "mobile", label: "門號實名憑證", have: has.mobile, from: "中華電信" },
+    { key: "rep", label: "繳費信譽憑證", have: has.rep, from: "中華電信" },
+  ];
+  const count = items.filter((i) => i.have).length;
+  return (
+    <aside className="rail" aria-label="錢包摘要">
+      <section className="card">
+        <div className="card-h">
+          <h2>你的裝置身分</h2>
+          <span className={`tag ${protection === "passphrase" ? "ok" : ""}`}>
+            {protection === "passphrase" ? "已加密" : "未加密"}
+          </span>
+        </div>
+        <div className="rail-id">
+          <div className="id-row">
+            <span>持有者 DID（實際簽章金鑰）</span>
+            <code title={did}>{shortDid(did)}</code>
+          </div>
+          <div className="id-row">
+            <span>信任根背書的發證者</span>
+            <code title={issuerDid}>{issuerDid ? shortDid(issuerDid) : "—"}</code>
+          </div>
+          <p className="hint">私鑰在這台裝置產生與保管，伺服器從頭到尾看不到它。</p>
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="card-h">
+          <h2>憑證夾</h2>
+          <span className="tag">{count} / {items.length}</span>
+        </div>
+        <div className="inv">
+          {items.map((i) => (
+            <div key={i.key} className={`inv-item ${i.have ? "have" : ""}`}>
+              {i.have ? <IcoCheck className="inv-ico" /> : <IcoCard className="inv-ico" />}
+              <div>
+                <b>{i.label}</b>
+                <div className="inv-state">發證方：{i.from}</div>
+              </div>
+              <span className="inv-state">{i.have ? "已持有" : "未申請"}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+    </aside>
+  );
+}
+
 /** 步驟分段標題：把同一步驟的卡片群組起來，取代在每張卡重複標號。 */
 function SectionHeading({ n, title, desc }: { n: number; title: string; desc: string }) {
   return (
@@ -505,7 +594,7 @@ export function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <div className="brand"><span className="logo">鏈</span>
+        <div className="brand"><span className="logo"><IcoShield /></span>
           <div><h1>ChainTrust 錢包</h1><p>自主權金融身分 · 一次 KYC、跨機構重用</p></div>
         </div>
         <div className={`status ${online ? "ok" : online === false ? "down" : ""}`}>
@@ -520,12 +609,12 @@ export function App() {
         </div>
       </header>
 
-      {error && <div className="banner err">⚠ {error} <button className="banner-x" onClick={() => setError("")}>✕</button></div>}
-      {notice && <div className="banner info">ℹ {notice} <button className="banner-x" onClick={() => setNotice("")}>✕</button></div>}
+      {error && <div className="banner err"><IcoAlert />{error}<button className="banner-x" aria-label="關閉" onClick={() => setError("")}>×</button></div>}
+      {notice && <div className="banner info"><IcoInfo />{notice}<button className="banner-x" aria-label="關閉" onClick={() => setNotice("")}>×</button></div>}
       {online == null && wakingSec != null && (
         <div className="banner info">
-          ⏳ 正在喚醒雲端後端服務（已等待 {wakingSec} 秒）。
-          後端採免費方案，閒置後首次開啟需約 30–50 秒冷啟動，之後操作即為即時。請稍候，毋須重新整理。
+          <IcoClock /><span>正在喚醒雲端後端服務（已等待 {wakingSec} 秒）。
+          後端採免費方案，閒置後首次開啟需約 30–50 秒冷啟動，之後操作即為即時。請稍候，毋須重新整理。</span>
         </div>
       )}
       {online === false && (
@@ -555,10 +644,14 @@ export function App() {
 
       {lockState === "unlocked" && identity && (
         <>
+          <div className="shell">
+            <Rail did={identity.did} protection={identity.protection} issuerDid={issuerDid}
+              has={{ kyc: !!parsed, mobile: !!mobileVc, rep: !!parsedRep }} />
+            <div className="main">
           <Orientation step={stage === "result" ? 3 : parsed || mobileVc || parsedRep ? 2 : 1} />
           {identity.protection === "demo-plaintext" && (
             <div className="banner danger">
-              🔓 <b>未加密的 Demo 模式</b>：私鑰以明文存在這個瀏覽器，任何同源腳本或裝置備份都能帶走。僅供展示，請勿放入真實個資。
+              <IcoUnlock /><span><b>未加密的 Demo 模式</b>：私鑰以明文存在這個瀏覽器，任何同源腳本或裝置備份都能帶走。僅供展示，請勿放入真實個資。</span>
               <button className="btn tiny" onClick={() => setPrompt({ kind: "protect" })}>立即設定密語加密</button>
             </div>
           )}
@@ -584,7 +677,7 @@ export function App() {
                   <div className="cred-row"><span>持有者</span><code title={identity.did}>{shortDid(identity.did)}</code></div>
                 </div>
                 <ValidationBox check={kycCheck} />
-                <p className="hint">🔒 以下欄位只存在你的錢包，出示時由你決定揭露哪些：</p>
+                <p className="hint">以下欄位只存在你的錢包，出示時由你決定揭露哪些：</p>
                 <div className="chips">
                   {parsed.disclosures.map((d) => (
                     <span key={d.claim} className={`chip ${CLAIM_LABELS[d.claim]?.pii ? "pii" : ""}`}>
@@ -641,7 +734,7 @@ export function App() {
                   <div className="cred-row"><span>資料來源</span><b>{String(parsedRep.payload.carrier ?? "中華電信")}</b></div>
                 </div>
                 <ValidationBox check={repCheck} />
-                <p className="hint">🔒 繳費明細只存在你的錢包，出示時預設只揭露信譽等級：</p>
+                <p className="hint">繳費明細只存在你的錢包，出示時預設只揭露信譽等級：</p>
                 <div className="chips">
                   {parsedRep.disclosures.map((d) => (
                     <span key={d.claim} className={`chip ${CLAIM_LABELS[d.claim]?.pii ? "pii" : ""}`}>
@@ -693,7 +786,7 @@ export function App() {
             <div className="card-h">
               <h2>裝置身分與金鑰</h2>
               <span className={`tag ${identity.protection === "passphrase" ? "ok" : "danger"}`}>
-                {identity.protection === "passphrase" ? "🔐 已以密語加密" : "🔓 未加密（Demo）"}
+                {identity.protection === "passphrase" ? "已以密語加密" : "未加密（Demo）"}
               </span>
             </div>
             <div className="cred">
@@ -723,6 +816,8 @@ export function App() {
                 if (f) setPrompt({ kind: "import", file: f });
               }} />
           </section>
+            </div>
+          </div>
         </>
       )}
 
@@ -789,7 +884,7 @@ export function App() {
             <div className="chips">
               {list<string>(result.verify.disclosed).length === 0 && <span className="chip muted">（無，僅述詞）</span>}
               {list<string>(result.verify.disclosed).map((c) => <span key={c} className="chip on">{CLAIM_LABELS[c]?.label ?? c}</span>)}
-              {list<string>(result.verify.withheld).map((c) => <span key={c} className="chip muted">🔒 {CLAIM_LABELS[c]?.label ?? c}</span>)}
+              {list<string>(result.verify.withheld).map((c) => <span key={c} className="chip muted">{CLAIM_LABELS[c]?.label ?? c}</span>)}
             </div>
           </div>
 
@@ -896,7 +991,7 @@ function SetupGate({
           disabled={!canEncrypt} onChange={(e) => setP2(e.target.value)} />
         {mismatch && <p className="field-err">兩次輸入不一致</p>}
       </div>
-      <p className="hint">⚠ 密語只存在你腦中，遺失<b>無法救回</b>。建立後請立即到「裝置身分與金鑰」匯出加密備份。</p>
+      <p className="hint">密語只存在你腦中，遺失<b>無法救回</b>。建立後請立即到「裝置身分與金鑰」匯出加密備份。</p>
 
       <div className="key-actions">
         <button className="btn primary" disabled={busy || !ready} onClick={() => onCreate(p1)}>
@@ -910,7 +1005,7 @@ function SetupGate({
           <button className="btn link" onClick={() => setShowDemo(true)}>評審／展示用：不設密語的快速模式 →</button>
         ) : (
           <div className="banner danger">
-            🔓 <b>Demo 快速模式：未加密，僅供展示</b><br />
+            <b>Demo 快速模式：未加密，僅供展示</b><br />
             私鑰會以<b>明文</b>存在瀏覽器 localStorage。任一 XSS、惡意相依或裝置備份都能把身分整把帶走，
             之後可在任何裝置永久冒用。<b>請勿放入真實個資</b>。之後隨時可在錢包內補設密語加密。
             <div className="key-actions">
@@ -941,7 +1036,7 @@ function UnlockGate({
   const fileRef = useRef<HTMLInputElement | null>(null);
   return (
     <section className="card gate">
-      <div className="card-h"><h2>解鎖錢包</h2><span className="tag ok">🔐 已加密</span></div>
+      <div className="card-h"><h2>解鎖錢包</h2><span className="tag ok">已加密</span></div>
       <div className="cred">
         <div className="cred-row"><span>此裝置身分</span><code title={did}>{shortDid(did)}</code></div>
       </div>
@@ -1060,16 +1155,16 @@ function ValidationBox({ check }: { check: VcValidation | null }) {
   if (!check.ok) {
     return (
       <div className="banner danger">
-        ⛔ <b>這張憑證未通過錢包驗證，請勿信任其內容：</b>
+        <b>這張憑證未通過錢包驗證，請勿信任其內容：</b>
         <ul className="vlist">{check.errors.map((m) => <li key={m}>{m}</li>)}</ul>
       </div>
     );
   }
   return (
     <div className="validation ok">
-      ✓ 已在本機驗證：發證者簽章、欄位摘要、<b>cnf 綁定本機金鑰</b>、時效
+      已在本機驗證：發證者簽章、欄位摘要、<b>cnf 綁定本機金鑰</b>、時效
       {check.warnings.length > 0 && (
-        <ul className="vlist muted">{check.warnings.map((m) => <li key={m}>· {m}</li>)}</ul>
+        <ul className="vlist muted">{check.warnings.map((m) => <li key={m}>{m}</li>)}</ul>
       )}
     </div>
   );
@@ -1116,7 +1211,7 @@ function ModelTrust({ m }: { m: ModelMetrics }) {
           {/* 誠實度：這個增益來自以標籤為條件生成的合成訊號，不是真實效度證據。
               數字若只在 metrics.json 裡標註而不呈現在畫面上，等於沒有標註。 */}
           {typeof ablation.caveat_zh === "string" && ablation.caveat_zh.length > 0 && (
-            <p className="caveat">⚠ {ablation.caveat_zh}</p>
+            <p className="caveat">{ablation.caveat_zh}</p>
           )}
         </div>
       )}
@@ -1146,15 +1241,15 @@ function ModelTrust({ m }: { m: ModelMetrics }) {
 function Outcome({ r, kind }: { r: VerifyResponse; kind: PresentationKind }) {
   const approveSub =
     kind === "reputation" ? "繳費信譽良好，無需聯徵即可核貸" : "已完成 KYC 且風險低";
-  const map: Record<string, { cls: string; icon: string; title: string; sub: string }> = {
-    approve: { cls: "approve", icon: "✅", title: kind === "reputation" ? "驗證通過 · 貸款核准" : "驗證通過 · 交易放行", sub: approveSub },
-    review: { cls: "review", icon: "⚠️", title: "需人工複核", sub: "憑證有效，但交易風險偏高" },
-    reject: { cls: "reject", icon: "⛔", title: "交易已攔截", sub: r.verify.ok ? "AI 判定高風險（疑似人頭/盜用）" : `憑證驗證失敗：${r.verify.reason ?? ""}` },
+  const map: Record<string, { cls: string; Icon: (p: IcoProps) => JSX.Element; title: string; sub: string }> = {
+    approve: { cls: "approve", Icon: IcoCheck, title: kind === "reputation" ? "驗證通過 · 貸款核准" : "驗證通過 · 交易放行", sub: approveSub },
+    review: { cls: "review", Icon: IcoAlert, title: "需人工複核", sub: "憑證有效，但交易風險偏高" },
+    reject: { cls: "reject", Icon: IcoBan, title: "交易已攔截", sub: r.verify.ok ? "AI 判定高風險（疑似人頭/盜用）" : `憑證驗證失敗：${r.verify.reason ?? ""}` },
   };
   const o = map[r.outcome] ?? { cls: "review", icon: "❔", title: "未知結果", sub: `伺服器回傳未預期的 outcome：${String(r.outcome)}` };
   return (
     <div className={`outcome ${o.cls}`}>
-      <span className="oc-icon">{o.icon}</span>
+      <o.Icon className="oc-icon" />
       <div><h2>{o.title}</h2><p>{o.sub}</p></div>
     </div>
   );
