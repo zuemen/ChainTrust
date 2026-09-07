@@ -1092,9 +1092,9 @@ function SetupGate({
   onDemo: () => void;
   onImport: (f: File) => void;
 }) {
+  const [mode, setMode] = useState<null | "secure" | "demo">(null);
   const [p1, setP1] = useState("");
   const [p2, setP2] = useState("");
-  const [showDemo, setShowDemo] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const canEncrypt = encryptionAvailable();
   const problem = p1 ? passphraseProblem(p1) : null;
@@ -1102,62 +1102,121 @@ function SetupGate({
   const ready = canEncrypt && !!p1 && !problem && !mismatch && p1 === p2;
 
   return (
-    <section className="card gate">
-      <div className="card-h"><h2>建立你的裝置身分</h2><span className="tag">金鑰自主</span></div>
-      <p>金鑰對會在<b>這台裝置的瀏覽器</b>內生成，私鑰永遠不會送到伺服器。
-        設定一組密語後，私鑰會以 <b>PBKDF2-SHA256（310,000 迭代）+ AES-GCM-256</b> 加密後才寫入本機儲存。</p>
+    <div className="landing">
+      {/* 先說明這是什麼，再要求任何輸入。
+          原本第一頁直接是「設定密語／再輸入一次」的表單——第一次來的人（例如評審）
+          還不知道這是什麼，就先被要求發明一組密碼，多數人會直接關掉。 */}
+      <section className="orient">
+        <span className="orient-eyebrow"><IcoShield />自主權金融身分</span>
+        <h2 className="orient-title">一次 KYC，走遍所有機構</h2>
+        <p className="orient-lede">
+          在<b>任一家機構</b>完成一次身分驗證，憑證就存進你自己的裝置。
+          之後向別的機構證明身分時，<b>只揭露對方真正需要的那一個欄位</b>——
+          姓名、生日留在錢包裡不外洩。每一筆交易同時經過 AI 反詐即時評分。
+        </p>
+        <ol className="flow" aria-label="三方信任模型">
+          <li className="flow-node issuer">
+            <span className="flow-badge" aria-hidden="true">1</span>
+            <div className="flow-body"><b>發證方</b><em>銀行 A · 中華電信</em>
+              <p>驗證身分後簽發憑證給你</p></div>
+          </li>
+          <li className="flow-node holder">
+            <span className="flow-badge" aria-hidden="true">2</span>
+            <div className="flow-body"><b>你（持有者）</b><em>這個錢包</em>
+              <p>憑證存在你的裝置，私鑰不離身</p></div>
+          </li>
+          <li className="flow-node verifier">
+            <span className="flow-badge" aria-hidden="true">3</span>
+            <div className="flow-body"><b>驗證方</b><em>銀行 B · 貸款平台</em>
+              <p>只看到你同意揭露的欄位</p></div>
+          </li>
+        </ol>
+        <p className="orient-foot">
+          接下來會實際跑完三條線：<b>跨機構免重複 KYC</b>、<b>高風險交易即時攔截</b>、<b>無聯徵的普惠核貸</b>。
+          全程約 2 分鐘，畫面上會有導覽逐步帶你操作。
+        </p>
+      </section>
 
       {!canEncrypt && (
         <div className="banner warn">
-          目前環境無法使用 WebCrypto（需 https 或 localhost），無法建立加密身分。
-          請改以 https 開啟，或使用下方的 Demo 快速模式（未加密）。
+          <IcoAlert /><span>目前環境無法使用 WebCrypto（需 https 或 localhost），
+          無法建立加密身分，請改用快速體驗模式。</span>
         </div>
       )}
 
-      <div className="field">
-        <label>設定密語（至少 8 字元）</label>
-        <input className="input" type="password" autoComplete="new-password" value={p1}
-          disabled={!canEncrypt} onChange={(e) => setP1(e.target.value)} placeholder="例如：一段你記得住的長句子" />
-        {problem && <p className="field-err">{problem}</p>}
-      </div>
-      <div className="field">
-        <label>再輸入一次</label>
-        <input className="input" type="password" autoComplete="new-password" value={p2}
-          disabled={!canEncrypt} onChange={(e) => setP2(e.target.value)} />
-        {mismatch && <p className="field-err">兩次輸入不一致</p>}
-      </div>
-      <p className="hint">密語只存在你腦中，遺失<b>無法救回</b>。建立後請立即到「裝置身分與金鑰」匯出加密備份。</p>
+      {/* 兩條路徑並列、都是一眼可見的選項。
+          原本快速模式被藏成底部一行小連結，但那才是評審真正需要的入口。 */}
+      <div className="choices">
+        <section className={`choice ${mode === "demo" ? "open" : ""}`}>
+          <h3>快速體驗</h3>
+          <p className="hint">一鍵開始，不用設密語。適合第一次來、想先看功能的人。</p>
+          {mode !== "demo" ? (
+            <button className="btn primary" disabled={busy} onClick={() => setMode("demo")}>
+              直接開始體驗
+            </button>
+          ) : (
+            <>
+              <div className="banner danger">
+                <IcoUnlock />
+                <span>此模式下私鑰以<b>明文</b>存在瀏覽器，僅供展示，<b>請勿放入真實個資</b>。
+                進入後隨時可在錢包內補設密語加密。</span>
+              </div>
+              <div className="key-actions">
+                <button className="btn primary" disabled={busy} onClick={onDemo}>
+                  {busy ? "建立中…" : "我了解，開始體驗"}
+                </button>
+                <button className="btn ghost" onClick={() => setMode(null)}>返回</button>
+              </div>
+            </>
+          )}
+        </section>
 
-      <div className="key-actions">
-        <button className="btn primary" disabled={busy || !ready} onClick={() => onCreate(p1)}>
-          {busy ? "建立中…" : "建立加密身分（建議）"}
-        </button>
-        <button className="btn ghost" disabled={busy} onClick={() => fileRef.current?.click()}>從備份還原</button>
-      </div>
-
-      <div className="demo-escape">
-        {!showDemo ? (
-          <button className="btn link" onClick={() => setShowDemo(true)}>評審／展示用：不設密語的快速模式 →</button>
-        ) : (
-          <div className="banner danger">
-            <b>Demo 快速模式：未加密，僅供展示</b><br />
-            私鑰會以<b>明文</b>存在瀏覽器 localStorage。任一 XSS、惡意相依或裝置備份都能把身分整把帶走，
-            之後可在任何裝置永久冒用。<b>請勿放入真實個資</b>。之後隨時可在錢包內補設密語加密。
+        <section className={`choice ${mode === "secure" ? "open" : ""}`}>
+          <h3>建立加密身分</h3>
+          <p className="hint">
+            設定密語後，私鑰以 <b>PBKDF2-SHA256（310,000 迭代）+ AES-GCM-256</b> 加密才寫入本機。
+            這是正式使用的方式。
+          </p>
+          {mode !== "secure" ? (
             <div className="key-actions">
-              <button className="btn danger" disabled={busy} onClick={onDemo}>我了解風險，建立未加密的 Demo 身分</button>
-              <button className="btn ghost" onClick={() => setShowDemo(false)}>返回</button>
+              <button className="btn ghost" disabled={busy || !canEncrypt} onClick={() => setMode("secure")}>
+                設定密語並建立
+              </button>
+              <button className="btn ghost" disabled={busy} onClick={() => fileRef.current?.click()}>從備份還原</button>
             </div>
-          </div>
-        )}
+          ) : (
+            <>
+              <div className="field">
+                <label htmlFor="pw1">設定密語（至少 8 字元）</label>
+                <input id="pw1" className="input" type="password" autoComplete="new-password" value={p1}
+                  disabled={!canEncrypt} onChange={(e) => setP1(e.target.value)}
+                  placeholder="例如：一段你記得住的長句子" />
+                {problem && <p className="field-err">{problem}</p>}
+              </div>
+              <div className="field">
+                <label htmlFor="pw2">再輸入一次</label>
+                <input id="pw2" className="input" type="password" autoComplete="new-password" value={p2}
+                  disabled={!canEncrypt} onChange={(e) => setP2(e.target.value)} />
+                {mismatch && <p className="field-err">兩次輸入不一致</p>}
+              </div>
+              <p className="hint">密語只存在你腦中，遺失<b>無法救回</b>。建立後請立即匯出加密備份。</p>
+              <div className="key-actions">
+                <button className="btn primary" disabled={busy || !ready} onClick={() => onCreate(p1)}>
+                  {busy ? "建立中…" : "建立加密身分"}
+                </button>
+                <button className="btn ghost" onClick={() => setMode(null)}>返回</button>
+              </div>
+            </>
+          )}
+        </section>
       </div>
 
       <input ref={fileRef} type="file" accept="application/json" style={{ display: "none" }}
         onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) onImport(f); }} />
-    </section>
+    </div>
   );
 }
 
-// ── 解鎖（已有加密身分）─────────────────────────────────
 function UnlockGate({
   busy, did, onUnlock, onImport, onReset,
 }: {
