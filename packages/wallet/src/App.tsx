@@ -5,7 +5,7 @@ import {
   getNonce,
   issueReputation,
   verifyPresentation,
-  health,
+  healthAwaitingWake,
   getMetrics,
   type TxContext,
   type VerifyResponse,
@@ -77,6 +77,12 @@ const REASON_LABELS: Record<string, string> = {
   MODEL_ANOMALY: "模型偵測到異常樣態",
   FRAUD_SERVICE_UNAVAILABLE: "反詐服務暫時無法連線（保守標記）",
 };
+
+/** 本機開發判斷：用來決定錯誤訊息要不要附上 pnpm 指令（線上訪客看不懂那個）。 */
+function isLocalHost(): boolean {
+  const h = window.location.hostname;
+  return h === "localhost" || h === "127.0.0.1" || h === "[::1]";
+}
 
 const CONF_LABELS: Record<string, string> = { high: "高信心", medium: "中等信心", low: "低信心" };
 
@@ -177,6 +183,8 @@ export function App() {
   // 服務 / 展示
   const [issuerDid, setIssuerDid] = useState<string>("");
   const [online, setOnline] = useState<boolean | null>(null);
+  // 後端睡著時的等待秒數。null = 沒在等（尚未開始或已連上／已放棄）。
+  const [wakingSec, setWakingSec] = useState<number | null>(null);
   const [scenario, setScenario] = useState<keyof typeof SCENARIOS>("normal");
   const [requestKind, setRequestKind] = useState<PresentationKind>("kyc");
   const [reveal, setReveal] = useState<Set<string>>(new Set([REQUIRED_BY_KIND.kyc]));
@@ -190,8 +198,17 @@ export function App() {
 
   // 後端連線與模型報告（與鎖定狀態無關）
   useEffect(() => {
-    health().then((h) => { setOnline(h.ok); setIssuerDid(h.issuerDid); }).catch(() => setOnline(false));
-    getMetrics().then((m) => { if (m.available && m.metrics) setMetrics(m.metrics); }).catch(() => {});
+    // 後端在免費方案雲端上，閒置後冷啟動要 30–50 秒。單次 fetch 會立刻失敗並
+    // 顯示「服務未連線」，但服務其實只是還沒醒——對第一次開這個網址的人來說
+    // 那等同「壞掉了」。改成邊等邊回報進度。
+    healthAwaitingWake({ onWaking: (sec) => setWakingSec(sec) })
+      .then((h) => { setOnline(h.ok); setIssuerDid(h.issuerDid); })
+      .catch(() => setOnline(false))
+      .finally(() => {
+        setWakingSec(null);
+        // 模型報告要等後端醒了才問得到，否則必定落空。
+        getMetrics().then((m) => { if (m.available && m.metrics) setMetrics(m.metrics); }).catch(() => {});
+      });
   }, []);
 
   // 開機：決定 setup / locked / unlocked（ref 守衛避免 StrictMode 重複執行遷移）
@@ -436,15 +453,32 @@ export function App() {
           <div><h1>ChainTrust 錢包</h1><p>自主權金融身分 · 一次 KYC、跨機構重用</p></div>
         </div>
         <div className={`status ${online ? "ok" : online === false ? "down" : ""}`}>
-          <span className="dot" />{online == null ? "連線中…" : online ? "服務已連線" : "服務未連線"}
+          <span className="dot" />
+          {online == null
+            ? wakingSec == null
+              ? "連線中…"
+              : `喚醒雲端服務中… ${wakingSec}s`
+            : online
+              ? "服務已連線"
+              : "服務未連線"}
         </div>
       </header>
 
       {error && <div className="banner err">⚠ {error} <button className="banner-x" onClick={() => setError("")}>✕</button></div>}
       {notice && <div className="banner info">ℹ {notice} <button className="banner-x" onClick={() => setNotice("")}>✕</button></div>}
+      {online == null && wakingSec != null && (
+        <div className="banner info">
+          ⏳ 正在喚醒雲端後端服務（已等待 {wakingSec} 秒）。
+          後端採免費方案，閒置後首次開啟需約 30–50 秒冷啟動，之後操作即為即時。請稍候，毋須重新整理。
+        </div>
+      )}
       {online === false && (
         <div className="banner warn">
-          後端未連線。請先啟動 issuer-verifier（<code>pnpm iv:dev</code>）與 ai-service。
+          後端目前無法連線。若你是從公開網址開啟，多半是雲端服務尚未喚醒——
+          請重新整理頁面再等一次。
+          {isLocalHost() && (
+            <> 若在本機開發，請先啟動 issuer-verifier（<code>pnpm iv:dev</code>）與 ai-service。</>
+          )}
         </div>
       )}
 

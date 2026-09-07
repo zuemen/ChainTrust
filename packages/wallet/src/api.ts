@@ -104,6 +104,36 @@ export async function health(): Promise<{ ok: boolean; issuerDid: string }> {
   return { ok: j.ok === true, issuerDid: typeof j.issuerDid === "string" ? j.issuerDid : "" };
 }
 
+/**
+ * 會等待後端冷啟動的健康檢查。
+ *
+ * 後端跑在免費方案的雲端服務上，閒置後會休眠，冷啟動實測 30–50 秒，期間平台
+ * 的路由層回 502/504 或直接逾時。單次 fetch 會立刻失敗，讓畫面顯示「服務未
+ * 連線」——但服務其實只是還沒醒。
+ *
+ * 對第一次開啟這個網址的人（例如評審）而言，「正在喚醒，請稍候」和「壞掉了」
+ * 是天差地別的兩件事，所以改成在時間預算內重試，並回報已等待秒數供 UI 顯示。
+ */
+export async function healthAwaitingWake(opts?: {
+  budgetMs?: number;
+  onWaking?: (elapsedSec: number) => void;
+}): Promise<{ ok: boolean; issuerDid: string }> {
+  const started = Date.now();
+  const deadline = started + (opts?.budgetMs ?? 90_000);
+  let lastError: unknown = new Error("unreachable");
+  for (;;) {
+    try {
+      return await health();
+    } catch (e) {
+      lastError = e;
+    }
+    if (Date.now() >= deadline) break;
+    opts?.onWaking?.(Math.round((Date.now() - started) / 1000));
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+  throw lastError;
+}
+
 export async function issueKyc(
   holderDid: string,
   subject?: Record<string, unknown>
