@@ -132,7 +132,26 @@ curl -X POST https://chaintrust.vercel.app/api/sdjwt/issue \
 
 ## 常見卡點
 
-**Render 免費方案會休眠**：閒置 15 分鐘後停機，下一個請求要等 ~50 秒冷啟動。
+**Render 免費方案會休眠**：閒置 15 分鐘後停機，下一個請求要等 ~33-50 秒冷啟動。
+
+> **這件事踩過兩次，都寫在這裡（2026-09-07）**
+>
+> **第一次**：`issuer-verifier` 呼叫 AI 服務的逾時原本寫死 5 秒，遠短於冷啟動時間。
+> 結果是 AI 服務一旦睡著就**再也醒不過來**——每次請求都在容器開機完成前被中斷，
+> 反詐功能永久停在「不可用」，高風險攔截的 demo 直接失效。
+> 已改為可調（`AI_TIMEOUT_MS` / `AI_METRICS_TIMEOUT_MS`）並在啟動時暖機。
+>
+> **第二次（更隱蔽）**：把逾時拉長後仍然醒不過來。原因是 Render 的路由層在容器
+> 開機期間是**立刻回 502**，不是把連線掛著等——所以「等久一點」沒有用，
+> 必須**重試**。已改為在時間預算內重試（502/503/504 視為「還在開機」）。
+>
+> 排查用：`/api/metrics` 不可用時會回 `reason`，區分
+> `timeout`（連不上或太慢）、`unreachable`（網址設錯）、`http_502`（對方正在開機）。
+> 沒有這個欄位的話，畫面上只有一個 `available:false`，三種病因無從分辨。
+
+**現場 demo 前務必開 keepalive**：到 Render → issuer-verifier → Environment 設
+`AI_KEEPALIVE_MS=600000`（10 分鐘）後重新部署。這會讓 issuer-verifier 定期戳
+AI 服務，避免展示進行到一半 AI 睡著。預設關閉，因為那會持續消耗免費方案額度。
 現場 demo 前先打一次 `/health` 暖機，或當天升到付費方案。
 
 **Vercel Function 的 10 秒上限**：`/api/*` 是 Serverless Function，Hobby 方案預設
