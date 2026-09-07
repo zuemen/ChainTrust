@@ -219,3 +219,94 @@ footer { text-align: center; font-size: 11px; color: var(--muted); margin-top: 2
   padding: 8px 10px;
   border-radius: 6px;
 }
+
+/* ── 導覽區塊：讓第一次來的人三秒內知道這是什麼 ───────────────────
+   角色色票在全站統一：發證方＝琥珀、你＝品牌藍、驗證方＝青綠。
+   顏色只是輔助，每個角色同時有文字標籤（不以顏色單獨傳達語意）。 */
+:root {
+  --role-issuer: #f0b429;
+  --role-holder: var(--brand2);
+  --role-verifier: #2dd4bf;
+}
+
+.orient {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, #141c38, #0d1428);
+  padding: 22px 20px 18px;
+  margin-bottom: 18px;
+}
+.orient-title { font-size: 22px; line-height: 1.35; margin: 0 0 8px; letter-spacing: -0.01em; }
+.orient-lede { font-size: 14px; line-height: 1.75; color: #c3cdeb; margin: 0 0 16px; max-width: 62ch; }
+.orient-lede b { color: var(--txt); }
+
+/* 三方模型：小螢幕直排、寬螢幕橫排並以箭頭串起 */
+.flow { list-style: none; display: grid; gap: 10px; margin: 0 0 14px; padding: 0; }
+.flow-node {
+  display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: start;
+  border: 1px solid var(--line); border-left: 3px solid var(--line);
+  border-radius: 10px; padding: 11px 13px; background: #0e1530;
+  transition: border-color 0.2s, background 0.2s;
+}
+.flow-node.issuer { border-left-color: var(--role-issuer); }
+.flow-node.holder { border-left-color: var(--role-holder); }
+.flow-node.verifier { border-left-color: var(--role-verifier); }
+.flow-node.active { background: #131c3c; border-color: var(--brand2); }
+.flow-badge {
+  width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 12px; font-weight: 700; background: #1b2547; color: var(--muted);
+  border: 1px solid var(--line); font-variant-numeric: tabular-nums;
+}
+.flow-node.active .flow-badge { background: var(--brand); color: #fff; border-color: var(--brand2); }
+.flow-body b { font-size: 14px; }
+.flow-body em { font-style: normal; font-size: 12px; color: var(--muted); margin-left: 8px; }
+.flow-body p { margin: 3px 0 0; font-size: 12.5px; color: #a9b5da; line-height: 1.5; }
+
+.orient-foot {
+  margin: 0; padding-top: 12px; border-top: 1px solid var(--line);
+  font-size: 12.5px; color: var(--muted);
+}
+.orient-foot b { color: var(--brand2); }
+
+@media (min-width: 620px) {
+  .flow { grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .flow-node { grid-template-columns: 1fr; }
+  .flow-badge { margin-bottom: 6px; }
+}
+
+/* ── 卡片的步驟編號與角色標籤 ─────────────────────────────── */
+.card h2 { display: flex; align-items: center; gap: 9px; }
+.step-no {
+  width: 22px; height: 22px; border-radius: 6px; display: inline-grid; place-items: center;
+  background: #1b2547; border: 1px solid var(--line); color: var(--muted);
+  font-size: 11.5px; font-weight: 700; font-variant-numeric: tabular-nums; flex: none;
+}
+.tag.role-issuer { color: var(--role-issuer); border-color: rgba(240,180,41,0.4); }
+.tag.role-verifier { color: var(--role-verifier); border-color: rgba(45,212,191,0.4); }
+
+/* ── 無障礙：可見的鍵盤焦點框（先前完全沒有）───────────────── */
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 3px solid var(--brand2);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+/* ── 步驟分段標題 ─────────────────────────────────────────── */
+.sec-head { margin: 26px 0 12px; }
+.sec-head h2 {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  font-size: 17px; margin: 0 0 4px;
+}
+.sec-no {
+  font-size: 11.5px; font-weight: 700; letter-spacing: 0.04em;
+  color: var(--brand2); background: rgba(99,102,241,0.14);
+  border: 1px solid rgba(129,140,248,0.4); border-radius: 999px; padding: 3px 10px;
+}
+.sec-head p { margin: 0; font-size: 13px; line-height: 1.65; color: var(--muted); max-width: 64ch; }
+
+/* 空狀態原本整段置中，長句置中不易讀也顯得業餘——改為左對齊 */
+.empty { text-align: left; padding: 4px 0; }
+.empty p { margin: 0 0 12px; }

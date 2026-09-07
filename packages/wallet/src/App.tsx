@@ -78,6 +78,62 @@ const REASON_LABELS: Record<string, string> = {
   FRAUD_SERVICE_UNAVAILABLE: "反詐服務暫時無法連線（保守標記）",
 };
 
+/**
+ * 導覽區塊：第一次開這個網址的人（例如評審）需要在三秒內知道
+ * 「這是什麼、我現在是誰、接下來要做什麼」。
+ *
+ * 沒有這一段時，畫面直接就是一排權重相同的卡片，看不出 SSI 的三方模型，
+ * 也看不出操作有先後順序——這是本專案最常被回饋「看不懂在做什麼」的原因。
+ */
+function Orientation({ step }: { step: 1 | 2 | 3 }) {
+  const roles = [
+    { key: "issuer", title: "發證方", sub: "銀行 A · 中華電信", desc: "驗證身分後簽發憑證給你" },
+    { key: "holder", title: "你（持有者）", sub: "這個錢包", desc: "憑證存在你的裝置，私鑰不離身" },
+    { key: "verifier", title: "驗證方", sub: "銀行 B · 貸款平台", desc: "只看到你同意揭露的欄位" },
+  ] as const;
+  const activeRole = step === 1 ? "issuer" : step === 2 ? "holder" : "verifier";
+  const stepName = step === 1 ? "取得憑證" : step === 2 ? "選擇出示情境" : "查看驗證結果";
+
+  return (
+    <section className="orient" aria-label="系統概觀">
+      <h2 className="orient-title">一次 KYC，走遍所有機構</h2>
+      <p className="orient-lede">
+        在<b>任一家機構</b>完成一次身分驗證，憑證就存進你自己的裝置。
+        之後向別的機構證明身分時，<b>只揭露對方真正需要的那一個欄位</b>——
+        姓名、生日留在錢包裡不外洩。每一筆交易同時經過 AI 反詐即時評分。
+      </p>
+
+      <ol className="flow" aria-label="三方信任模型">
+        {roles.map((r, i) => (
+          <li key={r.key} className={`flow-node ${r.key} ${activeRole === r.key ? "active" : ""}`}>
+            <span className="flow-badge" aria-hidden="true">{i + 1}</span>
+            <div className="flow-body">
+              <b>{r.title}</b>
+              <em>{r.sub}</em>
+              <p>{r.desc}</p>
+            </div>
+          </li>
+        ))}
+      </ol>
+
+      <p className="orient-foot">
+        下方卡片依序完成即可 · 目前進度
+        <b> 步驟 {step} / 3 — {stepName}</b>
+      </p>
+    </section>
+  );
+}
+
+/** 步驟分段標題：把同一步驟的卡片群組起來，取代在每張卡重複標號。 */
+function SectionHeading({ n, title, desc }: { n: number; title: string; desc: string }) {
+  return (
+    <div className="sec-head">
+      <h2><span className="sec-no">步驟 {n}</span>{title}</h2>
+      <p>{desc}</p>
+    </div>
+  );
+}
+
 /** 本機開發判斷：用來決定錯誤訊息要不要附上 pnpm 指令（線上訪客看不懂那個）。 */
 function isLocalHost(): boolean {
   const h = window.location.hostname;
@@ -499,6 +555,7 @@ export function App() {
 
       {lockState === "unlocked" && identity && (
         <>
+          <Orientation step={stage === "result" ? 3 : parsed || mobileVc || parsedRep ? 2 : 1} />
           {identity.protection === "demo-plaintext" && (
             <div className="banner danger">
               🔓 <b>未加密的 Demo 模式</b>：私鑰以明文存在這個瀏覽器，任何同源腳本或裝置備份都能帶走。僅供展示，請勿放入真實個資。
@@ -506,9 +563,12 @@ export function App() {
             </div>
           )}
 
+          <SectionHeading n={1} title="取得憑證"
+            desc="向發證機構申請可驗證憑證。三種憑證各自對應一個情境，建議先申請 KYC 憑證。" />
+
           {/* 我的憑證 */}
           <section className="card">
-            <div className="card-h"><h2>我的憑證</h2><span className="tag">發證：銀行 A（KYC Issuer）</span></div>
+            <div className="card-h"><h2>我的憑證</h2><span className="tag role-issuer">發證方：銀行 A</span></div>
             {!parsed ? (
               <div className="empty">
                 <p>你的錢包還沒有 KYC 憑證。向 <b>銀行 A</b> 申請一張可重複使用的可驗證憑證（VC）。</p>
@@ -539,7 +599,7 @@ export function App() {
 
           {/* 第二發證者：中華電信門號電子卡（多機構信任網路） */}
           <section className="card">
-            <div className="card-h"><h2>門號實名憑證</h2><span className="tag">發證：中華電信（門號電子卡）</span></div>
+            <div className="card-h"><h2>門號實名憑證</h2><span className="tag role-issuer">發證方：中華電信</span></div>
             {!mobileVc ? (
               <div className="empty">
                 <p>由<b>第二個發證機構</b>簽發：中華電信以門號電子卡驗證實名後發出憑證，
@@ -564,7 +624,7 @@ export function App() {
 
           {/* 普惠信譽憑證 */}
           <section className="card">
-            <div className="card-h"><h2>繳費信譽憑證</h2><span className="tag">發證：中華電信（普惠金融）</span></div>
+            <div className="card-h"><h2>繳費信譽憑證</h2><span className="tag role-issuer">發證方：中華電信 · 普惠金融</span></div>
             {!parsedRep ? (
               <div className="empty">
                 <p>沒有聯徵信用紀錄？你的<b>電信繳費史</b>就是可攜的財務信譽。<br />
@@ -594,9 +654,12 @@ export function App() {
             )}
           </section>
 
+          <SectionHeading n={2} title="向驗證方出示"
+            desc="選擇交易情境後出示憑證。出示前你會看到「將揭露／不會揭露」的完整清單，同意後才送出。" />
+
           {/* 出示請求：銀行 B / 商家（KYC） */}
           <section className="card">
-            <div className="card-h"><h2>出示請求</h2><span className="tag">來自：銀行 B / 商家（Verifier）</span></div>
+            <div className="card-h"><h2>出示請求</h2><span className="tag role-verifier">驗證方：銀行 B / 商家</span></div>
             <p>對方要求證明：<b>已完成 KYC（等級 ≥ 2）</b>。<br />
               依最小揭露原則，你<b>不需</b>提供姓名、生日等個資。</p>
             <div className="scen">
@@ -615,7 +678,7 @@ export function App() {
 
           {/* 出示請求：微型貸款（普惠金融） */}
           <section className="card">
-            <div className="card-h"><h2>出示請求</h2><span className="tag">來自：微型貸款平台（普惠金融）</span></div>
+            <div className="card-h"><h2>出示請求</h2><span className="tag role-verifier">驗證方：微型貸款平台</span></div>
             <p>對方要求證明：<b>繳費信譽等級 ≥ 2</b> —— <b>無需聯徵紀錄</b>。<br />
               你只揭露信譽等級，在網月數、繳費比例等明細<b>留在錢包</b>。</p>
             {!parsedRep && <p className="hint">先在上方申請「繳費信譽憑證」。</p>}
