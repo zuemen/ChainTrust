@@ -390,3 +390,25 @@ code { font-family: var(--mono); font-size: 12.5px; color: var(--action-hi); wor
 .choice h3 { margin: 0 0 var(--s2); font-size: 17px; }
 .choice .hint { margin: 0 0 var(--s4); }
 .choice .field:last-of-type { margin-bottom: var(--s3); }
+
+/* ── 導覽：進度點與「現在按這顆」的指示 ────────────────── */
+.topbar-right { display: flex; align-items: center; gap: var(--s2); flex: none; }
+.tour-meta { display: flex; align-items: center; gap: var(--s3); margin-bottom: 6px; }
+.tour-dots { display: inline-flex; gap: 5px; }
+.tour-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--surface-3); border: 1px solid var(--line); }
+.tour-dots i.on { background: var(--ok); border-color: var(--ok); }
+.tour-dots i.cur { background: var(--action); border-color: var(--action-hi); transform: scale(1.3); }
+.tour-cue { margin: var(--s2) 0 0 !important; font-size: 12px; color: var(--action-hi) !important; }
+
+/* 目前該按的那顆按鈕：脈動光圈。
+   只高亮卡片不夠——卡片裡常有兩三個按鈕，使用者仍要自己猜要按哪個。 */
+.tour-cta { position: relative; box-shadow: 0 0 0 0 rgba(61,123,255,.7); animation: tourPulse 1.9s ease-out infinite; }
+@keyframes tourPulse {
+  0%   { box-shadow: 0 0 0 0 rgba(61,123,255,.65); }
+  70%  { box-shadow: 0 0 0 12px rgba(61,123,255,0); }
+  100% { box-shadow: 0 0 0 0 rgba(61,123,255,0); }
+}
+/* 尊重系統的減少動態偏好：改用靜態外框表達同一件事 */
+@media (prefers-reduced-motion: reduce) {
+  .tour-cta { animation: none; box-shadow: 0 0 0 4px rgba(61,123,255,.45); }
+}

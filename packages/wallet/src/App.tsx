@@ -281,23 +281,32 @@ function Tour({ state, onClose }: { state: TourState; onClose: () => void }) {
   const idx = TOUR_STEPS.findIndex((s) => !s.done(state));
   const step = idx === -1 ? null : TOUR_STEPS[idx];
 
-  // 高亮並捲到目標卡片。用 class 而非遮罩，讓使用者仍可自由操作其他區域。
+  // 高亮目標卡片，並直接圈出「現在要按的那顆按鈕」。
+  // 只高亮卡片還不夠——卡片裡通常有兩三個按鈕，使用者仍要自己猜該按哪個。
+  // 用 class 而非全螢幕遮罩，讓使用者仍可自由操作其他區域。
   useEffect(() => {
     document.querySelectorAll(".tour-on").forEach((el) => el.classList.remove("tour-on"));
+    document.querySelectorAll(".tour-cta").forEach((el) => el.classList.remove("tour-cta"));
     if (!step) return;
     const el = document.getElementById(step.target);
     if (!el) return;
     el.classList.add("tour-on");
+    const cta = el.querySelector<HTMLElement>("button.primary:not(:disabled)");
+    if (cta) cta.classList.add("tour-cta");
     el.scrollIntoView({ block: "center", behavior: "smooth" });
-    return () => el.classList.remove("tour-on");
+    return () => {
+      el.classList.remove("tour-on");
+      cta?.classList.remove("tour-cta");
+    };
   }, [step?.id, step?.target]);
 
   if (!step) {
     return (
       <div className="tour done" role="status">
         <div className="tour-body">
-          <b>導覽完成</b>
-          <p>你已經走完三條主線：跨機構重用、AI 反詐攔截、普惠信譽。</p>
+          <b>導覽完成 · 三條主線都走完了</b>
+          <p>跨機構免重複 KYC、高風險交易即時攔截、無聯徵的普惠核貸。
+          你可以繼續自由操作，或重新整理頁面從頭再看一次。</p>
         </div>
         <button className="btn ghost tiny" onClick={onClose}>關閉</button>
       </div>
@@ -307,9 +316,17 @@ function Tour({ state, onClose }: { state: TourState; onClose: () => void }) {
   return (
     <div className="tour" role="status" aria-live="polite">
       <div className="tour-body">
-        <span className="tour-step">導覽 {idx + 1} / {TOUR_STEPS.length}</span>
+        <div className="tour-meta">
+          <span className="tour-step">步驟 {idx + 1} / {TOUR_STEPS.length}</span>
+          <span className="tour-dots" aria-hidden="true">
+            {TOUR_STEPS.map((st, i) => (
+              <i key={st.id} className={i < idx ? "on" : i === idx ? "cur" : ""} />
+            ))}
+          </span>
+        </div>
         <b>{step.title}</b>
         <p>{step.body}</p>
+        <p className="tour-cue">畫面上閃動的按鈕就是下一步，點它即可繼續。</p>
       </div>
       <button className="btn ghost tiny" onClick={onClose}>略過導覽</button>
     </div>
@@ -717,6 +734,12 @@ export function App() {
         <div className="brand"><span className="logo"><IcoShield /></span>
           <div><h1>ChainTrust 錢包</h1><p>自主權金融身分 · 一次 KYC、跨機構重用</p></div>
         </div>
+        <div className="topbar-right">
+          {!tourOn && (
+            <button className="btn ghost tiny" onClick={() => { setTourOn(true); try { localStorage.removeItem("ct.tour.off"); } catch { /* 隱私模式 */ } }}>
+              重新開始導覽
+            </button>
+          )}
         <div className={`status ${online ? "ok" : online === false ? "down" : ""}`}>
           <span className="dot" />
           {online == null
@@ -726,6 +749,7 @@ export function App() {
             : online
               ? "服務已連線"
               : "服務未連線"}
+        </div>
         </div>
       </header>
 
