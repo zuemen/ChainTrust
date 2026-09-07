@@ -213,6 +213,109 @@ function Rail({ did, protection, issuerDid, has }: {
   );
 }
 
+/**
+ * 操作導覽。
+ *
+ * 這個 demo 的價值在「一條完整的流程」，但流程有先後、卡片又多，
+ * 第一次來的人不知道該先點哪裡。導覽做三件事：
+ *   1. 一次只講一句「現在做什麼」，不丟一整份說明書
+ *   2. 依實際狀態自動判斷進行到哪一步——使用者亂點也不會跟丟
+ *   3. 高亮並捲動到該步驟的卡片，不用自己找
+ *
+ * 刻意不做強制遮罩：評審可能想自己亂逛，導覽只在旁邊提示，隨時可關。
+ */
+type TourState = { hasKyc: boolean; hasRep: boolean; stage: string; scenario: string; outcomeKind: string };
+
+const TOUR_STEPS: {
+  id: string;
+  target: string;
+  title: string;
+  body: string;
+  done: (t: TourState) => boolean;
+}[] = [
+  {
+    id: "issue",
+    target: "tour-kyc",
+    title: "先向銀行 A 申請一張 KYC 憑證",
+    body: "這代表你在某一家機構完成了一次身分驗證。憑證會存進這台裝置，不是存在銀行的資料庫。",
+    done: (t) => t.hasKyc,
+  },
+  {
+    id: "present",
+    target: "tour-present",
+    title: "換到銀行 B：選一個交易情境後出示",
+    body: "先選「正常交易」，再點「檢視將揭露的資料」。銀行 B 只需要知道你完成過 KYC，不需要姓名生日。",
+    done: (t) => t.stage === "result" || t.stage === "consent",
+  },
+  {
+    id: "consent",
+    target: "tour-present",
+    title: "看清楚要揭露什麼，再簽署",
+    body: "同意畫面會明列「將揭露／不會揭露」。只有勾選的欄位會離開錢包——確認後點「同意並簽署出示」。",
+    done: (t) => t.stage === "result",
+  },
+  {
+    id: "result",
+    target: "tour-result",
+    title: "看驗證結果：四項檢查 + AI 風險評分",
+    body: "驗章、鏈上信任根、撤銷狀態、出示述詞四項全綠即放行。注意「驗證方實際看到的欄位」只有一個。",
+    done: (t) => t.stage === "result" && t.scenario === "mule",
+  },
+  {
+    id: "mule",
+    target: "tour-present",
+    title: "關鍵對比：換成「高風險大額轉帳」再出示一次",
+    body: "同一張憑證、同樣只揭露一個欄位，但交易脈絡像人頭帳戶。回到出示請求改選高風險情境，看 AI 會不會擋下來。",
+    done: (t) => t.outcomeKind === "reject",
+  },
+  {
+    id: "rep",
+    target: "tour-rep",
+    title: "最後看普惠金融：用電信繳費履歷借錢",
+    body: "申請「繳費信譽憑證」，再向微型貸款平台出示。全程不查聯徵，明細也不離開你的錢包。",
+    done: (t) => t.hasRep && t.outcomeKind === "approve-rep",
+  },
+];
+
+function Tour({ state, onClose }: { state: TourState; onClose: () => void }) {
+  const idx = TOUR_STEPS.findIndex((s) => !s.done(state));
+  const step = idx === -1 ? null : TOUR_STEPS[idx];
+
+  // 高亮並捲到目標卡片。用 class 而非遮罩，讓使用者仍可自由操作其他區域。
+  useEffect(() => {
+    document.querySelectorAll(".tour-on").forEach((el) => el.classList.remove("tour-on"));
+    if (!step) return;
+    const el = document.getElementById(step.target);
+    if (!el) return;
+    el.classList.add("tour-on");
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    return () => el.classList.remove("tour-on");
+  }, [step?.id, step?.target]);
+
+  if (!step) {
+    return (
+      <div className="tour done" role="status">
+        <div className="tour-body">
+          <b>導覽完成</b>
+          <p>你已經走完三條主線：跨機構重用、AI 反詐攔截、普惠信譽。</p>
+        </div>
+        <button className="btn ghost tiny" onClick={onClose}>關閉</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="tour" role="status" aria-live="polite">
+      <div className="tour-body">
+        <span className="tour-step">導覽 {idx + 1} / {TOUR_STEPS.length}</span>
+        <b>{step.title}</b>
+        <p>{step.body}</p>
+      </div>
+      <button className="btn ghost tiny" onClick={onClose}>略過導覽</button>
+    </div>
+  );
+}
+
 /** 步驟分段標題：把同一步驟的卡片群組起來，取代在每張卡重複標號。 */
 function SectionHeading({ n, title, desc }: { n: number; title: string; desc: string }) {
   return (
@@ -329,7 +432,18 @@ export function App() {
   const [issuerDid, setIssuerDid] = useState<string>("");
   const [online, setOnline] = useState<boolean | null>(null);
   // 後端睡著時的等待秒數。null = 沒在等（尚未開始或已連上／已放棄）。
-  const [wakingSec, setWakingSec] = useState<number | null>(null);
+  // 連線等待秒數。用「自己跑的碼表」而不是等請求失敗才計時——後端睡著時第一次
+  // 請求可能整整掛住 60 秒，若只在失敗後才開始計秒，畫面會停在沒有任何解釋的
+  // 「連線中…」一分鐘，使用者只會判定網站壞了。
+  const [waitSec, setWaitSec] = useState(0);
+  // 導覽關掉後記住選擇，不要每次重整又冒出來
+  const [tourOn, setTourOn] = useState(() => {
+    try { return localStorage.getItem("ct.tour.off") !== "1"; } catch { return true; }
+  });
+  const closeTour = () => {
+    setTourOn(false);
+    try { localStorage.setItem("ct.tour.off", "1"); } catch { /* 隱私模式下忽略 */ }
+  };
   const [scenario, setScenario] = useState<keyof typeof SCENARIOS>("normal");
   const [requestKind, setRequestKind] = useState<PresentationKind>("kyc");
   const [reveal, setReveal] = useState<Set<string>>(new Set([REQUIRED_BY_KIND.kyc]));
@@ -346,15 +460,21 @@ export function App() {
     // 後端在免費方案雲端上，閒置後冷啟動要 30–50 秒。單次 fetch 會立刻失敗並
     // 顯示「服務未連線」，但服務其實只是還沒醒——對第一次開這個網址的人來說
     // 那等同「壞掉了」。改成邊等邊回報進度。
-    healthAwaitingWake({ onWaking: (sec) => setWakingSec(sec) })
+    healthAwaitingWake()
       .then((h) => { setOnline(h.ok); setIssuerDid(h.issuerDid); })
       .catch(() => setOnline(false))
       .finally(() => {
-        setWakingSec(null);
         // 模型報告要等後端醒了才問得到，否則必定落空。
         getMetrics().then((m) => { if (m.available && m.metrics) setMetrics(m.metrics); }).catch(() => {});
       });
   }, []);
+
+  // 連線未完成時每秒累加，供狀態列與橫幅顯示已等待多久。
+  useEffect(() => {
+    if (online !== null) return;
+    const t = setInterval(() => setWaitSec((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [online]);
 
   // 開機：決定 setup / locked / unlocked（ref 守衛避免 StrictMode 重複執行遷移）
   const booted = useRef(false);
@@ -600,9 +720,9 @@ export function App() {
         <div className={`status ${online ? "ok" : online === false ? "down" : ""}`}>
           <span className="dot" />
           {online == null
-            ? wakingSec == null
+            ? waitSec < 2
               ? "連線中…"
-              : `喚醒雲端服務中… ${wakingSec}s`
+              : `喚醒雲端服務中… ${waitSec}s`
             : online
               ? "服務已連線"
               : "服務未連線"}
@@ -611,9 +731,9 @@ export function App() {
 
       {error && <div className="banner err"><IcoAlert />{error}<button className="banner-x" aria-label="關閉" onClick={() => setError("")}>×</button></div>}
       {notice && <div className="banner info"><IcoInfo />{notice}<button className="banner-x" aria-label="關閉" onClick={() => setNotice("")}>×</button></div>}
-      {online == null && wakingSec != null && (
+      {online == null && waitSec >= 2 && (
         <div className="banner info">
-          <IcoClock /><span>正在喚醒雲端後端服務（已等待 {wakingSec} 秒）。
+          <IcoClock /><span>正在喚醒雲端後端服務（已等待 {waitSec} 秒）。
           後端採免費方案，閒置後首次開啟需約 30–50 秒冷啟動，之後操作即為即時。請稍候，毋須重新整理。</span>
         </div>
       )}
@@ -644,6 +764,21 @@ export function App() {
 
       {lockState === "unlocked" && identity && (
         <>
+          {tourOn && (
+            <Tour
+              state={{
+                hasKyc: !!parsed,
+                hasRep: !!parsedRep,
+                stage,
+                scenario,
+                outcomeKind:
+                  result?.outcome === "reject" ? "reject"
+                  : result?.outcome === "approve" && requestKind === "reputation" ? "approve-rep"
+                  : result?.outcome ?? "",
+              }}
+              onClose={closeTour}
+            />
+          )}
           <div className="shell">
             <Rail did={identity.did} protection={identity.protection} issuerDid={issuerDid}
               has={{ kyc: !!parsed, mobile: !!mobileVc, rep: !!parsedRep }} />
@@ -660,7 +795,7 @@ export function App() {
             desc="向發證機構申請可驗證憑證。三種憑證各自對應一個情境，建議先申請 KYC 憑證。" />
 
           {/* 我的憑證 */}
-          <section className="card">
+          <section className="card" id="tour-kyc">
             <div className="card-h"><h2>我的憑證</h2><span className="tag role-issuer">發證方：銀行 A</span></div>
             {!parsed ? (
               <div className="empty">
@@ -716,7 +851,7 @@ export function App() {
           </section>
 
           {/* 普惠信譽憑證 */}
-          <section className="card">
+          <section className="card" id="tour-rep">
             <div className="card-h"><h2>繳費信譽憑證</h2><span className="tag role-issuer">發證方：中華電信 · 普惠金融</span></div>
             {!parsedRep ? (
               <div className="empty">
@@ -751,7 +886,7 @@ export function App() {
             desc="選擇交易情境後出示憑證。出示前你會看到「將揭露／不會揭露」的完整清單，同意後才送出。" />
 
           {/* 出示請求：銀行 B / 商家（KYC） */}
-          <section className="card">
+          <section className="card" id="tour-present">
             <div className="card-h"><h2>出示請求</h2><span className="tag role-verifier">驗證方：銀行 B / 商家</span></div>
             <p>對方要求證明：<b>已完成 KYC（等級 ≥ 2）</b>。<br />
               依最小揭露原則，你<b>不需</b>提供姓名、生日等個資。</p>
@@ -864,7 +999,7 @@ export function App() {
 
       {/* 結果 */}
       {lockState === "unlocked" && stage === "result" && result && (
-        <section className="card result">
+        <section className="card result" id="tour-result">
           <Outcome r={result} kind={requestKind} />
           <div className="checks">
             <Check ok={result.verify.checks.signature} label="簽章有效" />

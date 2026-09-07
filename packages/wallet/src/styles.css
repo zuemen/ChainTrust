@@ -346,3 +346,33 @@ code { font-family: var(--mono); font-size: 12.5px; color: var(--action-hi); wor
 
 /* 右側主區在窄螢幕不需額外樣式，min-width:0 防止 grid 子項撐破容器 */
 .main { min-width: 0; }
+
+/* ── 操作導覽 ──────────────────────────────────────────────
+   固定在畫面角落，一次只講一句「現在做什麼」。
+   刻意不做全螢幕遮罩：使用者可能想自己亂逛，導覽只在旁邊提示。 */
+.tour {
+  position: fixed; z-index: 90; left: var(--s4); right: var(--s4); bottom: var(--s4);
+  display: flex; align-items: flex-start; gap: var(--s4);
+  background: var(--surface-2); border: 1px solid var(--action);
+  border-radius: var(--r-lg); padding: var(--s4) var(--s5);
+  box-shadow: 0 18px 48px -18px rgba(0,0,0,.95);
+}
+.tour.done { border-color: rgba(52,211,153,.5); }
+.tour-body { min-width: 0; }
+.tour-step {
+  display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: .06em;
+  font-variant-numeric: tabular-nums; color: var(--action-hi); background: var(--action-dim);
+  border: 1px solid rgba(61,123,255,.32); border-radius: 999px; padding: 2px 9px; margin-bottom: 6px;
+}
+.tour-body b { display: block; font-size: 15px; font-weight: 600; margin-bottom: 3px; }
+.tour-body p { margin: 0; font-size: 13px; line-height: 1.65; color: var(--txt-2); }
+.tour .btn { flex: none; margin-left: auto; }
+@media (min-width: 1040px) {
+  .tour { left: auto; right: var(--s6); bottom: var(--s6); max-width: 460px; }
+}
+
+/* 導覽當下指向的卡片 */
+.tour-on {
+  border-color: var(--action) !important;
+  box-shadow: 0 0 0 3px var(--action-dim), var(--shadow);
+}
