@@ -1,13 +1,20 @@
 # ChainTrust 反詐模型 Model Card（模型治理）
 
-> P1 待辦（`docs/completeness-roadmap.md` §4）：「Model card + 模型治理：訓練資料/限制/偏誤/重訓節奏/漂移監控」。供落地簡報、模型上線審查、與 `packages/ai-service` 開發者參考。所有數字取自現行已 commit 的 `model.joblib` 對應的 `metrics.json`（而非 `metrics.paysim-real.json`，見「訓練資料」一節說明兩者差異）。
+> P1 待辦（`docs/completeness-roadmap.md` §4）：「Model card + 模型治理：訓練資料/限制/偏誤/重訓節奏/漂移監控」。供落地簡報、模型上線審查、與 `packages/ai-service` 開發者參考。所有數字取自 repo 內的 `packages/ai-service/metrics.json`（而非 `metrics.paysim-real.json`，見「訓練資料」一節說明兩者差異）。
+
+> **可重現性（2026-10-17 更新）**：`model.joblib` **不入庫**（`.gitignore` 排除 `*.joblib`），
+> 由本機 `pnpm ai:train`、CI、Docker 建置三處各自從固定種子重新訓練。先前 `requirements.txt`
+> 用版本範圍，套件一升級三處就訓練出不同模型（PR-AUC 0.8611 ↔ 0.8616、demo 判定翻面），
+> 簡報數字與線上服務對不起來。現已**全部釘死精確版本**並統一 Python 3.13，三處結果一致；
+> 本文件數字即釘死版本下的重現值。
 
 ## 1. 模型概述
 
 - **用途**：`POST /score`（`packages/ai-service`）即時為交易/出示情境輸出風險分數，攔截人頭帳戶與身分盜用，供 issuer-verifier 的 `scoreTransaction()` 呼叫。
 - **輸出**：`risk`（0-100）、`decision`（`pass`/`review`/`block`）、`reasons`（可解釋 reason codes）、`top_factors`。
 - **決策門檻**（`app/model.py`）：`risk < 40 → pass`、`40 ≤ risk < 70 → review`、`risk ≥ 70 → block`。
-- **現行版本**：committed 的 `packages/ai-service/model.joblib`，`source: "synthetic (PaySim-like)"`，即下文「合成 hard-mode」模型——**不是**用真實 PaySim 資料訓練的版本（那個版本已實測並主動棄用，見 §2）。
+- **規則保底**（2026-10-17 新增，見 §3）：金流紅旗樣態不得被模型分數抹掉，`risk = max(模型分數, rule_floor)`。
+- **現行版本**：由 `train.py` 以固定種子重建的 `model.joblib`，`source: "synthetic (PaySim-like)"`，即下文「合成 hard-mode」模型——**不是**用真實 PaySim 資料訓練的版本（那個版本已實測並主動棄用，見 §2）。
 - **模式**：無模型檔時，`/score` 自動退回可解釋規則 baseline（`app/rules.py`），demo 仍可運作。
 
 ## 2. 訓練資料
@@ -43,7 +50,7 @@
 
 2026-07-02 曾用 Kaggle `ealaxi/paysim1`（635 萬筆、詐欺 8,213 筆＝0.13%）實跑，結果存 `metrics.paysim-real.json`：PR-AUC 0.9978、ROC-AUC 0.9999。**判定不可用**：
 
-> 「PaySim 模擬器的餘額欄位近乎決定性標記詐欺（詐欺列固定『轉出即歸零』），導致指標飽和（PR-AUC 0.998、ROC≈1.0、邏輯迴歸同分）且 CHT 訊號增益無從展現；該模型還把『已實名的過水帳戶』誤放行（背了模擬器 artifact、泛化更差）。因此 demo 模型維持合成 hard-mode 資料訓練——刻意去掉決定性金流訊號，才能誠實展示『金流訊號不足時，身分訊號的邊際價值（+16.45% PR-AUC）』。」
+> 「PaySim 模擬器的餘額欄位近乎決定性標記詐欺（詐欺列固定『轉出即歸零』），導致指標飽和（PR-AUC 0.998、ROC≈1.0、邏輯迴歸同分）且 CHT 訊號增益無從展現；該模型還把『已實名的過水帳戶』誤放行（背了模擬器 artifact、泛化更差）。因此 demo 模型維持合成 hard-mode 資料訓練——刻意去掉決定性金流訊號，才能誠實展示『金流訊號不足時，身分訊號的邊際價值（+16.24% PR-AUC，模擬推估）』。」
 > —— `docs/DEMO.md`「資料與模型誠實聲明」
 
 即真實 PaySim 上，金流餘額訊號強到讓任何模型（含邏輯迴歸）都能「作弊式」地逼近滿分，反而讓 ChainTrust 想展示的「身分訊號邊際價值」這個核心論點無法驗證，也讓模型在真實場景會誤判過水帳戶為安全（過度依賴模擬器 artifact，泛化差）。這是主動的資料選擇決策，不是「還沒跑真資料」的權宜之計。
@@ -52,10 +59,17 @@
 
 - **分類器**：`LightGBM`（`n_estimators=400, learning_rate=0.05, num_leaves=31, subsample=0.9, colsample_bytree=0.9, scale_pos_weight=neg/pos`），early stopping 50 輪（驗證集 AUC）。
 - **校準**：`CalibratedClassifierCV(..., method="isotonic")`，在驗證集上 fit，讓 `p_fraud` 是有意義的機率而非單純排序分數。
-- **異常分數**：`IsolationForest(n_estimators=200, contamination="auto")`，只用正常樣本訓練。（修正：先前設 `contamination=ytr.mean()`，即整體詐欺率，但實際只餵了 `Xtr[ytr == 0]`——訓練集按定義沒有污染，兩者自相矛盾。改為 `"auto"`。**需重跑 `pnpm ai:train` 才會反映到 `model.joblib`／`metrics.json`。**）
-- **最終風險分數**：`risk = round(100 × (0.7 × p_fraud + 0.3 × anomaly_norm))`（`app/model.py`）。**注意：本檔 §4 的所有指標與校準都算在 `p_fraud` 上，但決策門檻（40/70）是套在這個混合分數上——IsolationForest 貢獻的那 30% 不在上述指標的涵蓋範圍內。** 詳見 §5 限制第 8 點與 `metrics.json` 的 `risk_score_composition`。
-- **決策門檻選法**：以驗證集的 **PR 曲線直接求 F1 最大點**（`sklearn.precision_recall_curve`）。（修正：先前是 `np.linspace(0.05, 0.95, 91)` 固定網格，回報的最佳門檻 0.05 正好落在**網格下界**——那是人為邊界而不是最佳解。**需重跑 `pnpm ai:train`。**）
+- **異常分數**：`IsolationForest(n_estimators=200, contamination="auto")`，只用正常樣本訓練。（修正：先前設 `contamination=ytr.mean()`，即整體詐欺率，但實際只餵了 `Xtr[ytr == 0]`——訓練集按定義沒有污染，兩者自相矛盾。改為 `"auto"`，已反映在現行 `metrics.json`。）
+- **最終風險分數**：`risk = round(100 × (0.7 × p_fraud + 0.3 × anomaly_norm))`（`app/model.py`）。**注意：本檔 §4 的主要指標與校準都算在 `p_fraud` 上，但決策門檻（40/70）是套在這個混合分數上。** 混合分數另有直接評估，見 §4 與 `metrics.json` 的 `risk_score_composition`。
+- **規則保底**（`app/model.py::rule_floor`，三層互補中的規則層）：混合分數算完後 `risk = max(risk, floor)`。
+  - 人頭金流 `MULE_PATTERN`、人頭環 `MULE_RING`、**反覆**拆分（`STRUCTURING` 且 `VELOCITY`）→ 下限 70（block）
+  - 過水 `PASS_THROUGH`、快速資金移動 `RAPID_MOVEMENT`、聚合戶 `FAN_IN_COLLECTION` → 下限 40（review）
+  - **刻意排除身分類訊號**（未實名、新帳戶、裝置變更…），理由見 §6 偏誤聲明。
+  - 單筆金額貼近門檻（只有 `STRUCTURING`）**不**保底：實測會把 holdout 上 75 筆正常交易拉進 review、只多抓到 1 筆詐欺。
+  - **為什麼需要**：合成資料的金流型詐欺全是新帳戶，模型學到「老帳戶 ≈ 安全」。「已實名、500 天老帳戶一次提領 95%」「老帳戶短時間 38 筆貼著 5 萬門檻轉帳」這兩個 demo 樣本，模型只給約 3% 詐欺機率而放行。保底在分佈內（holdout）生效 0 筆、不改變任何指標，只作用在這類分佈外案例。回應中 `rule_floor_applied: true` 標示「這是規則拉上來的，不是模型判的」。
+- **決策門檻選法**：以驗證集的 **PR 曲線直接求 F1 最大點**（`sklearn.precision_recall_curve`）。（修正：先前是 `np.linspace(0.05, 0.95, 91)` 固定網格，回報的最佳門檻 0.05 正好落在**網格下界**——那是人為邊界而不是最佳解。現行結果為 0.5。）
 - **切分方法**：依 `step`（時間序）做 out-of-time 切分（70/15/15 train/val/test），不 shuffle，避免時間洩漏。
+  （誠實註記：合成資料的 `step` 是均勻亂數、各列獨立產生，資料本身沒有時間漂移，因此在合成資料上這個切分**實質等同隨機切分**；它的價值在於換成真實資料時流程已就緒。）
 - **防洩漏措施**：帳戶圖譜特徵（`payee_fan_in`/`account_graph_risk`）只用**訓練期**的邊建圖，套用到 val/test 時不納入未來邊；`train.py` 對 ROC-AUC ≥ 0.999 會自動印警告（「極可能資料洩漏或過擬」）。
 - **特徵**（29 個，`app/featurize.py::FEATURE_ORDER`）：原始金流欄位（`amount`/餘額四項/`errorBalance*`）、交易類型 one-hot、速度（`tx_count_1h/24h`）、CHT 增益訊號（`device_changed`/`mobile_realname_verified`/`vc_age_days`/`account_age_days`/`cross_institution_presentations`/`payee_risk`/`geo_jump`）、工程特徵（`amount_log`/`drain_ratio`/`pass_through`/`near_threshold`/`round_amount`/`velocity_ratio`）、圖譜特徵（`payee_fan_in`/`account_graph_risk`）。
 - **可解釋輸出**：`top_factors` 優先用 LightGBM SHAP 貢獻（`pred_contrib`），無法取得時退回規則權重排序（見 `app/rules.py::WEIGHTS`）。
@@ -64,24 +78,28 @@
 
 | 指標 | 數值 |
 | :-- | :-- |
-| Holdout PR-AUC（主指標，極度不平衡不看 accuracy） | 0.8611 |
-| Holdout ROC-AUC | 0.9271 |
-| ECE（期望校準誤差） | 0.001 |
-| Brier score | 0.016 |
-| Recall @ FPR 1% | 0.8501 |
-| MCC | 0.9023 |
-| 決策門檻（best-F1 grid search） | 0.05 |
-| 混淆矩陣（門檻下） | TP 482 / FP 12 / FN 85 / TN 5421 |
+| Holdout PR-AUC（主指標，極度不平衡不看 accuracy；隨機基準 = 詐欺率 0.0947） | 0.8616 |
+| Holdout ROC-AUC | 0.9259 |
+| ECE（期望校準誤差） | 0.0007 |
+| Brier score | 0.0157 |
+| Recall @ FPR 1% | 0.8504 |
+| Precision @ 100 | 0.99 |
+| MCC | 0.9025 |
+| 決策門檻（驗證集 PR 曲線 F1 最大點） | 0.5 |
+| 混淆矩陣（門檻下） | TP 483 / FP 12 / FN 85 / TN 5420 |
 
-**CHT 增益訊號消融**（拿掉 `tx_count_*`/`device_changed`/`mobile_realname_verified`/`vc_age_days`/`account_age_days`/`cross_institution_presentations`/`payee_risk`/`geo_jump` 這 9 個訊號重訓）：PR-AUC 0.7394 → 0.8611，**+16.45%**。
+**服務端實際決策分數**（混合分數＋規則保底，`metrics.json` 的 `risk_score_composition`）：PR-AUC 0.8630；`risk ≥ 70`（block）recall 0.8468／precision 0.9816；`risk ≥ 40`（review 以上）recall 0.8504／precision 0.9758，正常交易誤入 review 以上比例 0.22%。規則保底在 holdout 上生效 0 筆。
+
+**CHT 增益訊號消融**（拿掉 `tx_count_*`/`device_changed`/`mobile_realname_verified`/`vc_age_days`/`account_age_days`/`cross_institution_presentations`/`payee_risk`/`geo_jump` 這 9 個訊號重訓）：PR-AUC 0.7412 → 0.8616，**+16.24%**。
+（方法註記：被拿掉的 9 欄中 `tx_count_*`、`payee_risk` 嚴格說不是電信訊號，而是「ChainTrust 架構額外取得的訊號」；且由 `tx_count_*` 衍生的 `velocity_ratio` 仍留在特徵中，消融並不完全乾淨。這兩點都讓這個數字更不適合當作「電信訊號價值」的證據。）
 
 > ⚠️ **這個數字不是真實世界增益的證據，簡報引用時必須一併說明。**
-> 這 9 個欄位是 `synth.py` **以 `isFraud` 標籤為條件**生成的（詐欺列與正常列從兩組不同分佈抽樣，分佈差距由我們自己設定）。因此消融量到的 +16.45% 反映的是「**我們注入了多少標籤資訊**」，而不是中華電信訊號在真實金流中的價值——用注入標籤的特徵去證明該特徵有預測力，是循環論證。
+> 這 9 個欄位是 `synth.py` **以 `isFraud` 標籤為條件**生成的（詐欺列與正常列從兩組不同分佈抽樣，分佈差距由我們自己設定）。因此消融量到的 +16.24% 反映的是「**我們注入了多少標籤資訊**」，而不是中華電信訊號在真實金流中的價值——用注入標籤的特徵去證明該特徵有預測力，是循環論證。
 > `metrics.json` 已在 `cht_signal_ablation` 標記 `evidence_grade: "simulation"`、`label_conditioned: true`、`caveat: "label-conditioned synthetic signals; not evidence of real-world lift"`。
-> 這不是可修的 bug：要證明 CHT 訊號的真實增益，唯一辦法是取得**同時含真實金流與真實電信/裝置/地理訊號**的資料集，超出 PoC 範圍。目前可以誠實宣稱的是「架構上能吃這些訊號、且在我們設定的樣態下模型學得到」，**不能**宣稱「已驗證身分訊號帶來 +16.45% 反詐效益」。
+> 這不是可修的 bug：要證明 CHT 訊號的真實增益，唯一辦法是取得**同時含真實金流與真實電信/裝置/地理訊號**的資料集，超出 PoC 範圍。目前可以誠實宣稱的是「架構上能吃這些訊號、且在我們設定的樣態下模型學得到」，**不能**宣稱「已驗證身分訊號帶來 +16.24% 反詐效益」。
 > 另註：`metrics.paysim-real.json` 的 `lift_pct = -0.1` 同樣不能反向解讀成「CHT 訊號無效」——那是因為 PaySim 的餘額欄位已近乎決定性地標記詐欺，模型不需要額外訊號（見 §2.2）。兩個方向都不可外推。
 
-**已知異常，需要在簡報上主動說明**：baseline 邏輯迴歸（PR-AUC 0.8732）在合成資料上贏過 LightGBM（0.8611）與規則 baseline（0.8362）。這**不是**「合成資料太假」的證據——真 PaySim 資料上 LR 與 LightGBM 幾乎同分（見 §2.2），說明這是 PaySim 資料家族本身金流訊號強度普遍偏線性可分，跟合成與否無關。維持 LightGBM 上線是為了模型架構要能捕捉「交互型」詐欺原型（單一特徵不觸發、組合才觸發），這類樣態邏輯迴歸原理上就抓不到，即使當前資料集上分數略低。
+**已知異常，需要在簡報上主動說明**：baseline 邏輯迴歸（PR-AUC 0.8727）在合成資料上贏過 LightGBM（0.8616）與規則 baseline（0.8352）。這**不是**「合成資料太假」的證據——真 PaySim 資料上 LR 與 LightGBM 幾乎同分（見 §2.2），說明這是 PaySim 資料家族本身金流訊號強度普遍偏線性可分，跟合成與否無關。維持 LightGBM 上線是為了模型架構要能捕捉「交互型」詐欺原型（單一特徵不觸發、組合才觸發），這類樣態邏輯迴歸原理上就抓不到，即使當前資料集上分數略低。
 
 ## 5. 已知限制
 
@@ -90,21 +108,23 @@
 3. **PaySim 系真實資料不可用的結論範圍有限**：只驗證了「PaySim 模擬器」這個特定資料源不適合本專案的論點展示需求；不能推論成「所有真實金流資料都無法展現 CHT 訊號價值」——換一個真實資料源（如有機會取得 CHT/銀行的匿名化交易樣本）結論可能不同。
 4. **`payee_risk`/`account_graph_risk` 目前無真實資料源**：demo 情境靠手動指定或合成圖譜計算，落地需要真實的收款方風險評分/圖譜服務銜接。
 5. **決策門檻（40/70）未經真實成本效益校準**：目前是在合成驗證集上取 F1 最大點的結果（已從固定網格改為 PR 曲線求解，見 §3），落地需要用真實誤判成本（false block 的客訴/流失成本 vs false pass 的詐欺損失）重新校準。
-6. **CHT 增益訊號是以標籤為條件模擬出來的，消融 lift 不具外部效度**（最重要的一條）：`synth.py::augment_cht_signals()` 直接讀 `isFraud` 生成那 9 個欄位，`metrics.json` 的 `cht_signal_ablation.lift_pct = 16.45` 因此是**循環論證的產物**，只證明「我們注入的標籤資訊被模型學到了」。已在程式（必填 `allow_label_conditioning` 參數、真實資料改走 `fill_neutral_cht_signals()`）與 `metrics.json`（`evidence_grade: "simulation"` + `caveat`）兩層加上護欄與標註，但**這個限制本身無法靠改程式消除**——需要真實含 CHT 訊號的資料集才能真正驗證。詳見 §2.3 與 §4。
-7. **本專案所有指標皆為 synthetic-only，不可外推**：`metrics.json` 新增 `data_honesty.synthetic_only = true` / `no_real_world_validation = true` / `extrapolation` 說明。PR-AUC 0.8611 描述的是「這份人工設計的合成資料上的表現」，不是對真實台灣金融交易的效能承諾。
-8. **服務端 `risk` 分數與評估指標不是同一個量**：`/score` 回傳並用於 pass/review/block 決策的是 `risk = 100 × (0.7 × p_fraud + 0.3 × anomaly_norm)`，但 §4 的 PR-AUC / ROC-AUC / ECE / Brier / 最佳門檻**全部算在 `p_fraud` 上**——IsolationForest 貢獻的 30% 既未被指標涵蓋、也未經校準（isotonic 只校準了 `p_fraud`）。也就是說「校準良好（ECE 0.001）」這個宣稱不適用於實際做決策的分數。`train.py` 已新增 `risk_score_composition.blended_risk_evaluation`，在 holdout 上直接評估混合分數（PR-AUC / ROC-AUC / 服務端 40 與 70 門檻下的 recall & precision），**需重跑 `pnpm ai:train` 才會出現在 `metrics.json`**；現行 `metrics.json` 中該欄位為 `null` 並標了 `stale`。
+6. **CHT 增益訊號是以標籤為條件模擬出來的，消融 lift 不具外部效度**（最重要的一條）：`synth.py::augment_cht_signals()` 直接讀 `isFraud` 生成那 9 個欄位，`metrics.json` 的 `cht_signal_ablation.lift_pct = 16.24` 因此是**循環論證的產物**，只證明「我們注入的標籤資訊被模型學到了」。已在程式（必填 `allow_label_conditioning` 參數、真實資料改走 `fill_neutral_cht_signals()`）與 `metrics.json`（`evidence_grade: "simulation"` + `caveat`）兩層加上護欄與標註，但**這個限制本身無法靠改程式消除**——需要真實含 CHT 訊號的資料集才能真正驗證。詳見 §2.3 與 §4。
+7. **本專案所有指標皆為 synthetic-only，不可外推**：`metrics.json` 新增 `data_honesty.synthetic_only = true` / `no_real_world_validation = true` / `extrapolation` 說明。PR-AUC 0.8616 描述的是「這份人工設計的合成資料上的表現」，不是對真實台灣金融交易的效能承諾。
+8. **服務端 `risk` 分數與評估指標不是同一個量**：`/score` 回傳並用於 pass/review/block 決策的是 `risk = 100 × (0.7 × p_fraud + 0.3 × anomaly_norm)`，但 §4 的 PR-AUC / ROC-AUC / ECE / Brier / 最佳門檻**全部算在 `p_fraud` 上**——IsolationForest 貢獻的 30% 既未被指標涵蓋、也未經校準（isotonic 只校準了 `p_fraud`）。也就是說「校準良好（ECE 0.001）」這個宣稱不適用於實際做決策的分數。`train.py` 已在 holdout 上直接評估混合分數與加上規則保底後的實際決策（`risk_score_composition.blended_risk_evaluation`／`served_with_rule_floor`，數字見 §4）；但混合分數本身**仍未經校準**，不應被解讀為詐欺機率。
 9. **`payee_fan_in` / `account_graph_risk` 先前在服務端恆為 0（已修）**：`ScoreRequest` 沒有宣告這兩個欄位且設 `extra: "ignore"`，呼叫端帶了也會被 pydantic 丟棄——模型訓練時用了這兩個特徵、推論時卻永遠讀到 0（train/serve 偏移），`rules.py` 的 `FAN_IN_COLLECTION` / `MULE_RING` reason code 經 API 也永不觸發。已在 schema 補上欄位與界限驗證，並補了走 `TestClient` 的回歸測試（先前的測試直呼 `reason_codes(ctx)` 繞過 pydantic，綠燈掩蓋了問題）。**注意：目前的 `model.joblib` 是在「這兩個特徵有值」的資料上訓練的，修正後推論才真正對齊；但 demo 以外的呼叫端仍需自行接上圖譜服務才能提供真實值**（見第 4 點）。
 
 ## 6. 偏誤聲明
 
 **反詐特徵與普惠金融目標用戶重疊，存在未解決的張力。** 本專案另一條產品線（`docs/completeness-roadmap.md` §2.4「普惠金融」、`FinancialReputationCredential`）鎖定的目標用戶，正是「無聯徵信用紀錄的薄檔（thin-file）族群」——學生、新住民、自由工作者。
 
-問題在於：反詐模型目前排名前列的風險特徵中，`account_age_days`（重要度 278，全模型第 2 高）、`vc_age_days`（重要度 271，第 3 高）直接對應「新帳戶」與「證件核發時間短」；規則層的 `NEW_ACCOUNT`（`account_age_days < 7`）、`NO_REALNAME`（`mobile_realname_verified = false`）reason code 也是同樣邏輯。**這些正是薄檔族群天生就會踩到的訊號**——一個剛申辦門號、剛開戶的新住民，即使完全合法，也會因為「新」而被反詐模型加分。
+問題在於：反詐模型目前排名前列的風險特徵中，`account_age_days`（重要度 304，全模型**第 1 高**）、`vc_age_days`（重要度 258，第 2 高）直接對應「新帳戶」與「證件核發時間短」；規則層的 `NEW_ACCOUNT`（`account_age_days < 7`）、`NO_REALNAME`（`mobile_realname_verified = false`）reason code 也是同樣邏輯。**這些正是薄檔族群天生就會踩到的訊號**——一個剛申辦門號、剛開戶的新住民，即使完全合法，也會因為「新」而被反詐模型加分。
 
 這在現行系統裡不是致命缺陷（`NEW_ACCOUNT`/`NO_REALNAME` 各只加 10-25 分，遠低於 `MULE_PATTERN`45/`MULE_RING`40 這類實際金流樣態訊號，且決策是加權而非單一規則 override），但目前**沒有任何文件承認或量化過這個張力**，也沒有做過「薄檔合法用戶的誤判率是否顯著高於一般用戶」的分群測試。落地前應該：
 
 - 用（若拿得到）真實資料做分群校準測試：比較新帳戶/未實名族群與一般族群的 false positive rate 是否有顯著差距。
 - 若確認存在不成比例的誤判，考慮讓 `FinancialReputationCredential`（電信繳費信譽憑證）反向抵銷這類特徵的風險分數——用「薄檔但有信譽」取代「薄檔即風險」。
+- 已做的防範：2026-10-17 新增的規則保底**刻意排除**所有身分類訊號（`NO_REALNAME`、`NEW_ACCOUNT`、`DEVICE_CHANGE`、`GEO_JUMP`…），只看金流紅旗，避免「新」本身就把人拉進人工複核或攔截（有測試釘住：`test_rule_floor_ignores_identity_signals`）。
+- 反面也要誠實：同一個「模型過度依賴帳戶年齡」的特性，讓模型對**老帳戶**的詐欺（帳戶被盜用、人頭帳戶養成多年後才啟用）偏向放行——規則保底正是為這個盲點補的。
 
 ## 7. 治理：重訓節奏與漂移監控（PoC 階段建議，尚未實作）
 

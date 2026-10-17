@@ -21,8 +21,9 @@ docker compose up --build          # → http://localhost:5173
 
 > 後端在 Render 免費方案，閒置 15 分鐘會休眠。開始前先各打一次
 > <https://chaintrust-iv.onrender.com/health> 與 <https://chaintrust-ai.onrender.com/health>
-> 暖機（各約 50 秒）。另外 `CHAIN_MODE=memory`，服務重啟會換一組 issuer DID 並清空
-> 信任／撤銷登記，所以五步請連續跑完，中途不要停超過 15 分鐘。
+> 暖機（各約 50 秒）。`CHAIN_MODE=memory` 下信任／撤銷登記只存在記憶體；Render 上已設
+> `ISSUER_PRIVATE_KEY`／`CHT_ISSUER_PRIVATE_KEY` 時發證者 DID 固定，服務休眠重啟後憑證仍有效。
+> 若未設定，重啟會換一組 DID、先前申請的憑證失效，五步請連續跑完。
 
 方式 A／B 開瀏覽器：**http://localhost:5173**
 
@@ -63,11 +64,13 @@ docker compose up --build          # → http://localhost:5173
 
 - **模型需先訓練**：`model.joblib` 與 `metrics.json` 不入庫，首次請跑 `pnpm ai:train` 產生；未訓練時 `/score` 會自動退回**可解釋規則 baseline**（demo 仍可跑）。
 - **半合成資料**：無 Kaggle 時用合成 PaySim-like 資料。即使改用**真 PaySim**，其交易詐欺訊號為真，但電信/裝置/地理（門號實名、device_changed、geo_jump…）為**與 isFraud 相關的半合成注入**（PaySim 無這些欄位，見 `synth.py: augment_cht_signals`）。
-- **真 PaySim 實測結果（2026-07 已跑，見 `metrics.paysim-real.json`）**：635 萬筆、詐欺率 0.13%（真實比例）。但 PaySim 模擬器的餘額欄位**近乎決定性**標記詐欺（詐欺列固定「轉出即歸零」），導致指標飽和（PR-AUC 0.998、ROC≈1.0、邏輯迴歸同分）且 **CHT 訊號增益無從展現**；該模型還把「已實名的過水帳戶」誤放行（背了模擬器 artifact、泛化更差）。因此 **demo 模型維持合成 hard-mode 資料訓練**——刻意去掉決定性金流訊號，才能誠實展示「金流訊號不足時，身分訊號的邊際價值（+16.45% PR-AUC）」。
-- **指標以 PR-AUC 為準**（極度不平衡，勿看 accuracy）；ROC-AUC≈1.0 會被視為洩漏並警示。`metrics.json` 另含 recall@FPR1%/precision@100/MCC/混淆矩陣。
-- **安全**：mutating 端點（`/issue/*`、`/sdjwt/issue`、`/revoke`）可設 `API_KEY` 強制 `X-API-Key`；CORS 由 `CORS_ORIGIN` 收斂（見 `.env.example`）。
+- **真 PaySim 實測結果（2026-07 已跑，見 `metrics.paysim-real.json`）**：635 萬筆、詐欺率 0.13%（真實比例）。但 PaySim 模擬器的餘額欄位**近乎決定性**標記詐欺（詐欺列固定「轉出即歸零」），導致指標飽和（PR-AUC 0.998、ROC≈1.0、邏輯迴歸同分）且 **CHT 訊號增益無從展現**；該模型還把「已實名的過水帳戶」誤放行（背了模擬器 artifact、泛化更差）。因此 **demo 模型維持合成 hard-mode 資料訓練**——刻意去掉決定性金流訊號，才能誠實展示「金流訊號不足時，身分訊號的邊際價值（+16.24% PR-AUC）」——**這個數字是以標籤為條件生成的模擬訊號推得，屬循環論證，不可當作真實效益證據**（見 `docs/model-card.md` §4）。
+- **指標以 PR-AUC 為準**（極度不平衡，勿看 accuracy）；ROC-AUC≈1.0 會被視為洩漏並警示。現行 holdout PR-AUC 0.8616、recall@FPR1% 0.8504、ECE 0.0007；`metrics.json` 另含 precision@100/MCC/混淆矩陣與服務端實際決策（混合分數＋規則保底）的評估。
+- **規則保底**：金流紅旗樣態不得被模型分數抹掉（人頭、人頭環、反覆拆分→至少 block；過水、快速資金移動、聚合戶→至少 review）。被保底拉上來的判定會在結果頁註明。
+- **安全**：mutating 端點（`/issue/*`、`/sdjwt/issue`、`/revoke`）強制 `X-API-Key`（未設金鑰一律 503，fail-closed）；錢包不持有金鑰，由代理層注入。CORS 由 `CORS_ORIGIN` 收斂（見 `.env.example`）。
+- **交易脈絡由驗證方決定**：錢包只能選情境（正常／高風險／微型貸款），交易數值由驗證方伺服器持有，出示者無法自行改報。
 
 ## 進階（落地說明）
 
-- 目前 PoC 用 **InMemory** 鏈閘道；要接 Polygon Amoy 真合約，見 `docs/amoy-deploy-checklist.md`（私鑰只放本機 `.env`，絕不入庫）。
+- 目前 PoC 用 **InMemory** 鏈閘道；要接 Polygon Amoy 真合約，見 `docs/amoy-deploy-checklist.md`（私鑰只放本機 `.env`，絕不入庫）。ethers 模式的簽發→驗證→撤銷→驗證失敗已在本地 hardhat 鏈完整演練通過。
 - 所有「中華電信整合點」為 mock（`packages/issuer-verifier/src/adapters/cht.ts`），落地時替換實作、呼叫端不變。

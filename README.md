@@ -15,9 +15,10 @@ SSI（自主權身分）× AI 反詐 × 區塊鏈，建構於**中華電信信�
 > **開始前先暖機**：Render 免費方案閒置 15 分鐘會休眠，冷啟動要等 ~50 秒。
 > 先各打一次上面兩個後端的 `/health` 再開錢包。
 >
-> **目前 `CHAIN_MODE=memory`**：issuer DID 與信任／撤銷登記只存在行程記憶體，
-> 服務一重啟就換一組、登記清空。五步 demo 請當成一條連續流程跑完。
-> 要根治請改走 Amoy 上鏈（`CHAIN_MODE=ethers`），見
+> **目前 `CHAIN_MODE=memory`**：信任／撤銷登記只存在行程記憶體，服務重啟即清空。
+> 部署時設定 `ISSUER_PRIVATE_KEY`／`CHT_ISSUER_PRIVATE_KEY` 可讓發證者 DID 固定，
+> 重啟後信任根自動重新背書同一組發證者，**使用者手上的憑證不會失效**（未設則每次重啟換一組 DID）。
+> 要讓信任與撤銷真的上鏈請改走 Amoy（`CHAIN_MODE=ethers`），見
 > [`docs/amoy-deploy-checklist.md`](docs/amoy-deploy-checklist.md)。
 >
 > 部署方式與架構取捨見 [`docs/vercel-deploy.md`](docs/vercel-deploy.md)。
@@ -76,12 +77,12 @@ pnpm smoke
 
 現場操作腳本見 [`docs/DEMO.md`](docs/DEMO.md)。
 
-> **注意**：`model.joblib`／`metrics.json` 不入庫，首次須 `pnpm ai:train` 產生（未訓練時 `/score` 自動退回規則 baseline）。即使用真 PaySim，電信／裝置／地理訊號為**半合成注入**；模型品質以 **PR-AUC** 為準。mutating 端點可用 `API_KEY` 保護、CORS 由 `CORS_ORIGIN` 收斂（見 `.env.example`）。
+> **注意**：`model.joblib` 不入庫，首次須 `pnpm ai:train` 產生（未訓練時 `/score` 自動退回規則 baseline）；`metrics.json` 有入庫，是釘死套件版本下的重現結果（本機、CI、Docker 三處一致）。即使用真 PaySim，電信／裝置／地理訊號為**半合成注入**；模型品質以 **PR-AUC** 為準。mutating 端點可用 `API_KEY` 保護、CORS 由 `CORS_ORIGIN` 收斂（見 `.env.example`）。
 
 各套件單獨啟動：
 
 ```shell
-pnpm contracts:test    # 合約測試（16）
+pnpm contracts:test    # 合約測試（32）
 pnpm iv:e2e            # 身分層 e2e（M1+M2.0）
 pnpm iv:dev            # issuer-verifier :3001
 pnpm ai:dev            # AI 反詐 :8000
@@ -110,7 +111,16 @@ pnpm test             # 跑所有 JS/TS 套件測試
 - [`docs/completeness-roadmap.md`](docs/completeness-roadmap.md) — 完整度分析、P0/P1/P2 待辦、逐項執行日誌
 - [`CLAUDE.md`](CLAUDE.md) — 專案脈絡與開發規範（給 Claude Code）
 
-## 最近更新（2026-07-21）
+## 最近更新（2026-10-17）
+
+- **撤銷修好了**：線上 demo 的 `/revoke` 原本一律 500；上 Amoy 後撤銷也會永遠查不到（撤銷寫進部署者的命名空間、驗證端查發證者的）。發證者金鑰改為可固定，撤銷由發證者自己的金鑰送出；本地鏈 e2e 實測修正前失敗、修正後全過。附帶效益：固定 DID 後服務重啟不再讓憑證失效。
+- **交易脈絡改由驗證方決定**：`/sdjwt/verify` 只收情境 ID、拒收出示者自帶的交易數值（稽核 H9）。
+- **AI 規則保底**：金流紅旗樣態（人頭、人頭環、反覆拆分→至少 block；過水、快速資金移動、聚合戶→至少 review）不得被模型分數抹掉；刻意排除身分類訊號以免放大對薄檔族群的偏誤。
+- **CI 修好**：nginx 驗證與 Python 測試自 9/4 起持續紅燈；Python 套件改為全部釘死版本，指標可重現（PR-AUC 0.8616）。
+- 繳費信譽憑證改由中華電信發證者簽；移除未鑑權的 `POST /holder`。
+- 測試現況：合約 32、issuer-verifier 84、ai-service 36 全綠；e2e 於 memory 與 ethers（本地鏈）兩種模式全過。
+
+## 先前更新（2026-07-21）
 
 > 完整的完整度分析、P0/P1/P2 待辦與逐項執行日誌（含日期）見 [`docs/completeness-roadmap.md`](docs/completeness-roadmap.md) §5。
 

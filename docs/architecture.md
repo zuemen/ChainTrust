@@ -50,17 +50,20 @@ ChainTrust 是一個 SSI 金融身分錢包 PoC，由四個信任角色與一條
 ## 3. 鏈上合約設計
 
 ### IssuerRegistry
-- `mapping(address => bool) trustedIssuer`（以 issuer 鏈上位址索引；位址由 did:key Secp256k1 公鑰推導，亦相容 did:ethr）。
-- `setTrustedIssuer(address issuer, bool trusted)` — 僅 owner（代表 CHT PublicCA 根）。
+- `mapping(address => bool)`（以 issuer 鏈上位址索引；位址由 did:key Secp256k1 公鑰推導，亦相容 did:ethr）。
+- `setTrustedIssuer(address issuer, bool trusted)` / `setTrustedIssuers(address[], bool)` — 僅 owner（代表 CHT PublicCA 根）；零地址 revert `ZeroIssuer`；狀態未變則不發事件。
 - `isTrustedIssuer(address) view returns (bool)`。
 - 事件：`IssuerTrustChanged(address indexed issuer, bool trusted)`。
+- 擁有權：**`Ownable2Step`**（移轉需新 owner 主動 accept），且 **`renounceOwnership` 一律 revert**——信任根一旦沒有 owner，就再也無法撤銷外洩的 issuer。
 
 ### RevocationRegistry
-- 撤銷以 `bytes32 credentialHash`（VC id 的 keccak256 雜湊）為鍵。
-- 建構子帶入 `IssuerRegistry` 位址；**撤銷權綁定信任根**：僅受 `IssuerRegistry` 背書的簽發者可 `revoke`，首位撤銷者被記為 `issuerOf`，之後僅其可 `revoke/unrevoke`。未受信任的任意第三方無法撤銷 → 杜絕「知道 revocationKey 即可惡意撤銷他人有效憑證」。
-- `isRevoked(bytes32) view returns (bool)`。
-- 事件：`CredentialRevoked` / `CredentialUnrevoked(bytes32 indexed hash, address indexed issuer)`。
-- 殘留風險與後續：受信任簽發者集合內仍可能搶綁尚未撤銷之 hash；未來以「簽發時由 issuer 簽章綁定」強化。
+- 撤銷狀態以 **issuer 命名空間**隔離：`mapping(address issuer => mapping(bytes32 credentialHash => bool))`。`credentialHash` 為 VC id 的 keccak256。
+- 建構子帶入 `IssuerRegistry` 位址（零地址或非合約皆 revert `ZeroRegistry`）。
+- `revoke(bytes32)` / `revokeBatch(bytes32[])`（上限 200）/ `unrevoke(bytes32)`：**皆要求 msg.sender 受信任根背書**，且只寫 msg.sender 自己那一格。
+- `isRevoked(address issuer, bytes32 credentialHash) view returns (bool)`：驗證端必須帶入「該 VC 的簽發者位址」查詢。
+- 事件：`CredentialRevoked` / `CredentialUnrevoked(address indexed issuer, bytes32 indexed credentialHash)`。
+- 這個設計同時杜絕：未受信任第三方撤銷任何 VC；受信任 issuer B 影響 A 簽發之 VC（無跨 issuer 汙染）；「先撤銷者搶下 issuer 綁定」的前置攻擊（2026-08 稽核 H12/H13 修正前的舊設計有此漏洞）。
+- **系統面的必要條件**：送撤銷交易的位址必須就是憑證簽發者。因此 issuer-verifier 的發證者金鑰可由 `ISSUER_PRIVATE_KEY` 固定，且 ethers 模式撤銷交易由該金鑰送出（2026-10-17 修正，先前撤銷寫進部署者的命名空間、永遠查不到）。
 
 ## 4. 架構決策（ADR）
 
@@ -71,16 +74,16 @@ ChainTrust 是一個 SSI 金融身分錢包 PoC，由四個信任角色與一條
 **決策**：PoC 部署 Polygon Amoy（chainId 80002）。**理由**：EVM 相容、水龍頭易取得、與 did:ethr 相容。**落地**：以相同合約介面遷移至 CHT BaaS，呼叫端不變。
 
 ### ADR-003 DID 方法：Holder 與 Issuer 皆 did:key(Secp256k1)
-**決策**：Holder 與 Issuer 皆用 `did:key`（Secp256k1）。Issuer 的鏈上信任位址由其公鑰推導（`computeAddress(pubkey)`）並登記於 `IssuerRegistry`，亦相容 `did:ethr`。**理由**：did:key 離線可生成、錢包友善；以公鑰推導位址即可對應鏈上信任查詢，issuer 無需先上鏈。**取捨**：實作以 did:key 為主（與 `agent.ts` 一致）。
+**決策**：Holder 與 Issuer 皆用 `did:key`（Secp256k1）。Issuer 的鏈上信任位址由其公鑰推導（`computeAddress(pubkey)`）並登記於 `IssuerRegistry`，亦相容 `did:ethr`。**理由**：did:key 離線可生成、錢包友善；以公鑰推導位址即可對應鏈上信任查詢，issuer 無需先上鏈。**取捨**：實作以 did:key 為主（與 `agent.ts` 一致）。**補充（2026-10-17）**：發證者金鑰可由環境變數固定（`agent.ts::resolveIssuerDid`），同一把 Secp256k1 金鑰既簽憑證、也簽撤銷交易，鏈上命名空間才對得上；Holder 金鑰一律在瀏覽器端產生，伺服器不代管。
 
 ### ADR-004 選擇性揭露用 SD-JWT
 **決策**：VC 採 SD-JWT（`@veramo/credential-w3c` + SD-JWT plugin）。**理由**：金融個資需最小揭露，Verifier 只拿必要欄位，明文不落鏈。**取捨**：較 JWT-VC 複雜，但符合 PoC 核心價值。
 
 ### ADR-005 撤銷用鏈上 RevocationRegistry（非 StatusList2021）
-**決策**：PoC 以自建鏈上 `RevocationRegistry`（mapping 查詢），且**撤銷權綁定 `IssuerRegistry` 信任根**（僅受背書簽發者可撤銷並綁定 `issuerOf`）。**理由**：Demo 可即時鏈上撤銷、查詢直觀，並避免任意第三方惡意撤銷；StatusList2021 與「簽發時簽章綁定」留作落地優化。
+**決策**：PoC 以自建鏈上 `RevocationRegistry`（mapping 查詢），**撤銷權綁定 `IssuerRegistry` 信任根**，撤銷狀態以 issuer 命名空間隔離（只能撤銷自己簽發的憑證）。**理由**：Demo 可即時鏈上撤銷、查詢直觀，並避免任意第三方惡意撤銷或跨 issuer 汙染。StatusList2021 留作落地優化——動機是**隱私**：現行驗證端逐張明查撤銷狀態，查詢行為本身可被關聯分析。
 
-### ADR-006 AI 反詐先規則 baseline，後 ML
-**決策**：`/score` 先以可解釋規則（金額/頻率/裝置/人頭特徵）跑通，再以 `train.py`（LightGBM + IsolationForest）訓練 `model.joblib`，`model.py` 自動載入。**理由**：先打通 Demo 線、模型可後補且向後相容。
+### ADR-006 AI 反詐先規則 baseline，後 ML；上線時規則保底
+**決策**：`/score` 先以可解釋規則（金額/頻率/裝置/人頭特徵）跑通，再以 `train.py`（LightGBM + IsolationForest）訓練 `model.joblib`，`model.py` 自動載入。模型上線後規則不退場：金流紅旗樣態（人頭金流、人頭環、反覆拆分→至少 block；過水、快速資金移動、聚合戶→至少 review）作為分數下限，模型分數不得抹掉；身分類訊號刻意不納入保底。**理由**：先打通 Demo 線、模型可後補且向後相容；模型對訓練分佈外的案例（例：老帳戶清空提領）可能給低分，規則＋模型＋情資三層互補才能抵抗資料偏差與詐團適應。
 
 ### ADR-007 CHT 整合點一律 adapter + mock
 **決策**：PublicCA 根背書、門號電子卡、BaaS、CHT Security 情資、Hami Pay 皆以介面 + mock 實作。**理由**：賽時無正式 API，落地時替換實作不動呼叫端。

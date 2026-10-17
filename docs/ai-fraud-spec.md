@@ -29,6 +29,7 @@
 - **LightGBM** 二元分類（詐欺機率）— 主力；不平衡用 `scale_pos_weight`。
 - **IsolationForest** 異常分數 — 補無標籤新樣態。
 - 融合：`risk = clip(round(100 * (0.7 * p_fraud + 0.3 * anomaly_norm)), 0, 100)`。
+- 規則保底（2026-10-17）：`risk = max(risk, rule_floor(reason_codes))`。人頭金流／人頭環／反覆拆分（STRUCTURING+VELOCITY）→ 70；過水／快速資金移動／聚合戶 → 40；身分類訊號不納入（避免放大對薄檔族群的偏誤）。回應帶 `rule_floor_applied`。
 - reason codes：規則 ＋ 前幾大特徵貢獻（SHAP 可選）映射，如 `MULE_PATTERN`、`VELOCITY`、`NO_REALNAME`、`DEVICE_CHANGE`、`GEO_JUMP`。
 
 ## `train.py` 流程
@@ -42,7 +43,7 @@ eval（AUC、PR-AUC、人頭召回）→ IsolationForest fit（正常樣本）�
 
 ## 驗收
 
-- holdout **AUC > 0.90**、人頭召回可展示。
+- holdout **PR-AUC**（主指標；極度不平衡下 ROC-AUC 會誤導）可展示並附隨機基準（詐欺率）；現行 0.8616。人頭召回可展示。
 - `/score`：人頭樣本 → `block` ＋ reasons；正常 → `pass`。
 - pytest：固定向量回歸測試。
 

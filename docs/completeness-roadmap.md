@@ -3,6 +3,8 @@
 > 目的：盤點 PoC 現況，檢視「普惠金融、防詐、區塊鏈、AI」四大主軸是否都講得清楚，
 > 並以「與中華電信合作落地」為目標列出待補清單。
 > 撰於 2026-07-02，基於 docs/ 全部文件 + 程式碼實況（全測試綠：合約 16、pytest 19、iv e2e 全過）。
+> **§1–§3 為 2026-07-02 當時的快照**（其中的數字如 +16.45% 是舊訓練結果，現行為 +16.24%，見 `docs/model-card.md`）；
+> 最新狀態以 §4 待辦清單與 §5 執行日誌為準。
 
 ---
 
@@ -115,8 +117,9 @@ README 寫「**普惠財務信譽** — 無信用紀錄者也能累積可攜、�
 ### P0 — 比賽決賽前必補（直接影響評審觀感）
 
 - [x] **普惠金融實作補位**：新增 `FinancialReputationCredential`（mock 電信繳費紀錄 adapter → 簽發信譽 VC → 錢包出示給「微型貸款」情境），Demo 加第 6 步。四大主軸缺一軸的問題就此解決。（2026-07-02）
-- [x] **線上 Demo 可部署**：錢包上 Vercel（`packages/wallet/vercel.json` + Serverless 代理 `api/[...path].js`，第三種「代理層注入 API 金鑰」實作），兩個後端上吃 Docker 的 PaaS。手冊見 `docs/vercel-deploy.md`。評審不用自己 clone repo 就能玩。（2026-09-04）
+- [x] **線上 Demo 可部署**：錢包上 Vercel（`packages/wallet/vercel.json` + Serverless 代理 `api/proxy.js`＋顯式 rewrite（原 `api/[...path].js` 在 Vercel 只吃單層路徑，已改），第三種「代理層注入 API 金鑰」實作），兩個後端上吃 Docker 的 PaaS。手冊見 `docs/vercel-deploy.md`。評審不用自己 clone repo 就能玩。（2026-09-04）
 - [ ] **真部署 Polygon Amoy**：照 `amoy-deploy-checklist.md` 執行，Demo 附 PolygonScan 連結，回答「真的在鏈上嗎」。
+  **（2026-10-17）** 在本地 hardhat 鏈完整演練時發現並修掉兩個阻斷 bug——撤銷寫錯命名空間（H12 修正後的系統面遺漏）、連發交易撞 nonce——修正前照 checklist 上鏈，ethers 模式 e2e 會在第一次撤銷就失敗。現在只差有測試幣的私鑰。
   **（2026-07-02 準備工作已完成，只差有測試幣的私鑰）**：`smoke:amoy` 腳本已就緒（deployer 自我背書→revoke→unrevoke→印 PolygonScan 連結）、server 於 ethers 模式自動背書示範 issuer、localhost 鏈已演練 deploy+smoke 全流程。接手者只需：①測試錢包領 Amoy POL ②建兩個 `.env`（見 checklist 步驟 3、7）③依序跑 `deploy:amoy`→`smoke:amoy`→`CHAIN_MODE=ethers` e2e ④回填 PolygonScan 連結至 DEMO.md。**注意**：撤銷交易的 msg.sender 必須受信任，`smoke:amoy` 的 deployer 自我背書是 e2e/server 撤銷能走通的前置，勿跳過。
 - [x] **「為什麼要鏈」一頁論述**（中立性/稽核/可攜，見 2.2）進 architecture.md 或簡報。（2026-07-02，architecture.md §1）
 - [x] **真 PaySim 重訓**：已實跑（635 萬筆、詐欺率 0.13%），指標存 `metrics.paysim-real.json`。**發現**：PaySim 餘額欄位近決定性 → 指標飽和（PR-AUC 0.998、LR≈LGBM 同分），CHT 增益歸零、且該模型誤放行已實名過水帳戶（背 artifact、泛化差）。2.3 疑點解答：合成資料上 LR 贏 LGBM 不是資料太假，而是 PaySim 家族本身金流訊號過強；demo 維持合成 hard-mode 模型以誠實展示身分訊號邊際價值。（2026-07-02）
@@ -140,7 +143,7 @@ README 寫「**普惠財務信譽** — 無信用紀錄者也能累積可攜、�
 
 - [ ] StatusList2021 取代鏈上明查撤銷（隱私動機）。
 - [ ] 簽發時 issuer 簽章綁定 revocation hash（解 ADR-005 殘留的搶綁風險）。
-- [x] CI（GitHub Actions）。（2026-08-04）`.github/workflows/ci.yml` 三個 job：node（contracts compile+test、iv test、iv/wallet build，`--frozen-lockfile`）、python（先 `train.py` 再 pytest）、infra（`docker compose config` + nginx 樣板 envsubst 後 `nginx -t`）。**未納入**：e2e 與 smoke（需同時起三個服務）。
+- [x] CI（GitHub Actions）。（2026-08-04；**2026-10-17 才真正轉綠**——Infra 的 nginx 驗證從建立起就解析不到 compose 服務名而失敗，Python 測試則因套件版本漂移時紅時綠。）`.github/workflows/ci.yml` 三個 job：node（contracts compile+test、iv test、iv/wallet build，`--frozen-lockfile`）、python（先 `train.py` 再 pytest）、infra（`docker compose config` + nginx 樣板 envsubst 後 `nginx -t`）。**未納入**：e2e 與 smoke（需同時起三個服務）。
 - [ ] 對抗性測試集（規避 near_threshold、慢速過水等）與紅隊演練文件。
 - [ ] 多語系、正式 UI 設計系統、無障礙。
 - [ ] CHT BaaS 實際遷移演練（合約不變、只換 provider 的證明）。
@@ -151,6 +154,7 @@ README 寫「**普惠財務信譽** — 無信用紀錄者也能累積可攜、�
 
 | 日期 | 階段 | 內容 |
 | :-- | :-- | :-- |
+| 2026-10-17 | 決賽前修復 | 全專案重讀＋實測後修復：①撤銷——memory 模式 `/revoke` 一律 500（從未 `setRevokeAs`）；ethers 模式撤銷由 `CHAIN_PRIVATE_KEY` 送、寫進部署者命名空間，驗證端查發證者命名空間，永不生效。改為發證者金鑰可固定（`ISSUER_PRIVATE_KEY`／`CHT_ISSUER_PRIVATE_KEY`），撤銷由發證者金鑰送出；`NonceManager` 修連發撞 nonce。本地 hardhat 鏈 deploy→smoke→ethers e2e 全過。附帶：固定 DID 後重啟不再讓憑證失效。②H9——交易脈絡改由驗證方伺服器持有，`/sdjwt/verify` 拒收 `tx`。③AI 規則保底（金流紅旗不得被模型抹掉，排除身分類訊號）；「已實名老帳戶清空提領」「老帳戶反覆貼門檻」原本被模型放行。④CI 自 9/4 起全紅：nginx 驗證補變數、Python 套件全部釘死＋統一 3.13，指標可重現（PR-AUC 0.8616、+16.24%）。⑤信譽憑證改由中華電信發證者簽；移除未鑑權 `POST /holder`。⑥文件全面同步（合約描述、法規查證狀態、數字）。測試：合約 32、iv 84、ai 36。 |
 | 2026-09-04 | 部署（P0） | 錢包支援部署到 Vercel：新增 `packages/wallet/api/[...path].js`（Serverless 反向代理，去 `/api` 前綴、注入 `X-API-Key`、清掉瀏覽器自帶的同名標頭）與 `vercel.json`（SPA rewrite 排除 `/api`、照 `nginx.conf.template` 移植安全標頭並加 HSTS），手冊 `docs/vercel-deploy.md`。**設計決策**：只有錢包上 Vercel——issuer-verifier 的 Veramo agent 與一次性 nonce 存在行程記憶體、ai-service 建置時要訓練 LightGBM 且需 libgomp，兩者都不適合 Serverless，留在吃 Docker 的 PaaS。以真後端實跑代理驗證（GET 透傳 200、POST 簽出 1606 字元 SD-JWT、偽造金鑰被清掉、缺 IV_URL 回 500、缺金鑰回 401）。 |
 | 2026-09-04 | 整合 | `feat/browser-holder-keys` 合回 `main`（金鑰自主 + 安全稽核 + CI + 商業模式/法規文件，60 檔 +5126 行）。解 `config.ts`/`server.ts` 兩處衝突（分支的啟動期 fail-closed 與 main 的 `ALLOW_UNAUTHENTICATED_DEV` 開發旁路合併保留）。順帶：新增 `packages/issuer-verifier/vitest.config.ts` 把 hook timeout 從 10s 放寬到 30s（`server.test.ts` 的 `beforeAll` 要動態載入整個 Veramo 相依，冷啟動在較慢機器/CI 上會誤判失敗）；重訓 demo 模型讓 `metrics.json` 與現行模型同步。測試：合約 32、issuer-verifier 67、ai-service 32 全綠。 |
 | 2026-07-21 | P1（CHT 產品對應表） | §3.1 表格改用實際查證的 CHT 產品（來源與日期見表格下方）：`MobileCardAdapter`→MID+（2026-07-01 甫發表）＋GSMA Open Gateway；`ThreatIntelAdapter`→同批 Open Gateway 防詐 API＋中華資安國際/CHTTL 威脅情資；`BaasAdapter`→CHT BaaS（Ethereum/Hyperledger、hicloud）；`BillingHistoryAdapter`部分對應 KYC Tenure API。**加分發現**：CHTTL 已有遵循 W3C DID 標準的 DID 研發項目，與本專案架構高度一致。**風險發現**：HiPKI/ePKI 根憑證 2026-08-01 起被 Chrome 撤銷信任，`PublicCaAdapter` 落地前需先釐清影響範圍。Hami Pay 無公開開發者 API、電信繳費明細無公開 API，兩者維持誠實保留。已將調研結果寫進 4 個 adapter 介面（`cht.ts`）與 `ChainGateway`（`gateway.ts`）的檔頭註記；順帶修正 `poc-spec.md` 的 `BaasAdapter`/程式碼命名不一致問題。 |

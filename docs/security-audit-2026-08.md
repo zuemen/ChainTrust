@@ -26,7 +26,20 @@
 | H7 nginx 無安全標頭 | ✅ 已修 | CSP / frame-ancestors / nosniff 等 |
 | CI 不存在 | ✅ 已建 | `.github/workflows/ci.yml` |
 
-**已知殘留（需後續處理）**：`metrics.json` 的門檻等數字仍是舊訓練產物（需重跑 `pnpm ai:train`）；`graph_features_for_row` 仍是死碼（接線屬功能新增）；C4 的 `lift_pct` 數字本身仍是循環論證的產物。
+**已知殘留（需後續處理）**：`graph_features_for_row` 仍是死碼（接線屬功能新增）；C4 的 `lift_pct` 數字本身仍是循環論證的產物。
+
+### 後續修復（2026-10-17）
+
+| 項目 | 狀態 | 證據 |
+| :-- | :-- | :-- |
+| H9 AI 交易上下文由瀏覽器捏造 | ✅ 已修 | 交易脈絡改由驗證方伺服器持有（`src/scenarios.ts`），`/sdjwt/verify` 只收 scenario ID、拒收 `tx`；HTTP 層測試釘住 |
+| H10 錢包通用簽章 oracle | ✅ 已修（2026-08） | 只匯出 `getKeyBindingSigner()`，簽章位元組固定以 KB header 開頭 |
+| H11 錢包不驗收到的 VC | ✅ 已修（2026-08） | `validateIssuedVc()`：驗簽、`_sd` 摘要、`cnf` 綁定本機金鑰、時效、vct |
+| **新發現**：memory 模式 `/revoke` 一律 500 | ✅ 已修 | 從未呼叫 `setRevokeAs()`；測試只驗過 401/400 |
+| **新發現**：H12 修正後 ethers 模式撤銷永不生效 | ✅ 已修 | 撤銷由 `CHAIN_PRIVATE_KEY` 送、寫進部署者命名空間，驗證端查發證者命名空間；改為發證者金鑰可固定且撤銷由發證者金鑰送出。本地鏈 e2e 實測修正前失敗、修正後全過 |
+| **新發現**：ethers 連發交易撞 nonce | ✅ 已修 | `NonceManager` |
+| **新發現**：`POST /holder` 未鑑權產生伺服器端持有者金鑰 | ✅ 已移除 | 與「伺服器不代管」矛盾、可無限增長記憶體 |
+| 殘留：`metrics.json` 為舊訓練產物 | ✅ 已修 | Python 套件全部釘死、依釘死版本重訓；本機／CI／Docker 三處結果一致 |
 
 ---
 

@@ -61,7 +61,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 以 Render 為例（Railway/Fly.io 同理）：
 
-1. Render → New → **Web Service** → 連上 `zuemen/ChainTrust-`
+1. Render → New → **Web Service** → 連上 `zuemen/ChainTrust`（repo 已由 `ChainTrust-` 改名，舊網址會轉址）
 2. Runtime 選 **Docker**
    - Dockerfile Path：`packages/ai-service/Dockerfile`
    - Docker Build Context Directory：`.`（**必須是 repo 根目錄**，Dockerfile 第一行有註明）
@@ -87,6 +87,12 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
    | `CHAIN_MODE` | `memory`（或部署 Amoy 後改 `ethers`） | 見 `docs/amoy-deploy-checklist.md` |
    | `AI_SERVICE_URL` | 步驟 1 的網址 | |
    | `CORS_ORIGIN` | 步驟 3 拿到的 Vercel 網址 | 先填佔位、步驟 3 後回來改 |
+   | `ISSUER_PRIVATE_KEY` | 另產一把 `0x`＋64 位 hex | **強烈建議**。銀行 A 發證者 DID 固定，服務休眠重啟後使用者手上的憑證仍有效 |
+   | `CHT_ISSUER_PRIVATE_KEY` | 再另產一把 | 同上，給中華電信發證者（門號實名、繳費信譽） |
+   | `AI_KEEPALIVE_MS` | `600000` | 現場 demo 前設定，避免 AI 服務展示到一半睡著（見下方「常見卡點」） |
+
+   發證者金鑰產生方式：`node -e "console.log('0x'+require('crypto').randomBytes(32).toString('hex'))"`。
+   只放在 Render 的環境變數，不寫進任何檔案；`memory` 模式下它們不碰任何鏈，純粹用來固定 DID。
 
 4. Deploy，記下網址，例如 `https://chaintrust-iv.onrender.com`
 5. 驗證：`curl https://chaintrust-iv.onrender.com/health` → `{"ok":true,"issuerDid":"did:key:..."}`

@@ -24,19 +24,27 @@
    pnpm --filter @chaintrust/contracts smoke:amoy
    ```
    腳本做四件事，並逐步印出 PolygonScan 交易連結（Demo 的「真的在鏈上」事證）：
-   - 將 **deployer 自身**設為受信任 issuer——`RevocationRegistry.revoke` 要求 `msg.sender` 受信任，
-     而 issuer-verifier 的撤銷交易由 `CHAIN_PRIVATE_KEY`（= deployer）簽，**缺這步 e2e/server 的撤銷會 revert**。
-   - （可選）`TRUST_ISSUER=0x...` 額外背書一個 issuer 位址（例如 server `/health` 回傳的 `issuerAddr`）。
+   - 將 **deployer 自身**設為受信任 issuer。原因：issuer-verifier 在 ethers 模式下，若沒另設
+     `ISSUER_PRIVATE_KEY`，就**以 `CHAIN_PRIVATE_KEY`（= deployer）作為銀行 A 的發證者金鑰**——
+     憑證由它簽、撤銷交易也由它送。`RevocationRegistry` 以 `msg.sender` 為撤銷命名空間且要求它受信任，
+     所以 deployer 必須先受信任，簽發→撤銷→驗證才會對上同一個位址。
+   - （可選）`TRUST_ISSUER=0x...` 額外背書一個 issuer 位址，例如你另設的 `CHT_ISSUER_PRIVATE_KEY`
+     對應位址（server 啟動後由需鑑權的 `/info` 回傳 `chtIssuerAddr`）。
+     > server 啟動時若 `CHAIN_PRIVATE_KEY` 是 IssuerRegistry owner，會自動背書兩個發證者，這步通常可省。
    - `revoke` 一筆測試 hash → 確認 `isRevoked=true`。
    - `unrevoke` → 確認 `isRevoked=false`。
 7. 切 issuer-verifier 到真鏈：在 `packages/issuer-verifier/.env` 設定（見 `.env.example`）：
    ```
    CHAIN_MODE=ethers
    AMOY_RPC_URL=https://rpc-amoy.polygon.technology
-   CHAIN_PRIVATE_KEY=0x同一把測試私鑰   # 簽 setTrustedIssuer/revoke；不設則唯讀
+   CHAIN_PRIVATE_KEY=0x同一把測試私鑰   # 信任根 owner；未設 ISSUER_PRIVATE_KEY 時也兼任銀行 A 發證者（簽憑證＋送撤銷）
+   # CHT_ISSUER_PRIVATE_KEY=0x另一把     # 選填：中華電信發證者；設了才能上鏈撤銷它簽的憑證（該位址需有少量 POL 付 gas）
    ```
    合約位址不用填——自動讀 `packages/contracts/deployments/amoy.json`。
 8. 驗證端到端：`pnpm --filter @chaintrust/issuer-verifier e2e`（`CHAIN_MODE=ethers` 下每步真的上鏈，較慢屬正常）。
+   > 2026-10-17 已在本地 hardhat 鏈完整演練：deploy → smoke → ethers 模式 e2e 全數通過，HTTP 層
+   > 簽發→驗證通過→`/revoke`→驗證失敗 也走通。演練中修掉兩個只在真鏈才會出現的 bug：撤銷寫錯命名空間、
+   > 連發交易撞 nonce。
 9. 到 PolygonScan Amoy 查交易：https://amoy.polygonscan.com/
 
 ## 注意

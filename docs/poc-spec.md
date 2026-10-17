@@ -5,7 +5,7 @@
 ## 1. 環境需求
 
 - Node ≥ 20（本機 v24）、pnpm 9
-- Python ≥ 3.11（本機 3.13）
+- Python 3.13（`requirements.txt` 釘死精確版本；Docker 與 CI 同版本，確保三處訓練結果一致）
 - Polygon Amoy 測試錢包私鑰（放 `packages/contracts/.env`，**勿入庫**）+ 水龍頭代幣
 
 ## 2. 套件介面契約
@@ -13,18 +13,20 @@
 ### 2.1 contracts
 
 ```solidity
-interface IIssuerRegistry {
-  function setTrustedIssuer(address issuer, bool trusted) external; // onlyOwner
+interface IIssuerRegistry { // Ownable2Step；renounceOwnership 停用
+  function setTrustedIssuer(address issuer, bool trusted) external;        // onlyOwner
+  function setTrustedIssuers(address[] calldata issuers, bool trusted) external; // onlyOwner
   function isTrustedIssuer(address issuer) external view returns (bool);
   event IssuerTrustChanged(address indexed issuer, bool trusted);
 }
 
-interface IRevocationRegistry {
-  function revoke(bytes32 credentialHash) external;   // only original issuer
-  function unrevoke(bytes32 credentialHash) external; // only original issuer
-  function isRevoked(bytes32 credentialHash) external view returns (bool);
-  event CredentialRevoked(bytes32 indexed credentialHash, address indexed issuer);
-  event CredentialUnrevoked(bytes32 indexed credentialHash, address indexed issuer);
+interface IRevocationRegistry { // 撤銷狀態以 issuer（msg.sender）命名空間隔離
+  function revoke(bytes32 credentialHash) external;               // msg.sender 須受信任
+  function revokeBatch(bytes32[] calldata credentialHashes) external; // 上限 200
+  function unrevoke(bytes32 credentialHash) external;             // msg.sender 須受信任
+  function isRevoked(address issuer, bytes32 credentialHash) external view returns (bool);
+  event CredentialRevoked(address indexed issuer, bytes32 indexed credentialHash);
+  event CredentialUnrevoked(address indexed issuer, bytes32 indexed credentialHash);
 }
 ```
 
@@ -45,14 +47,23 @@ interface IRevocationRegistry {
 - `fraud.ts` + `verifyAndScore`（M2.1 整合）
   - `scoreTransaction(ctx, {baseUrl})` → 呼叫 ai-service `POST /score`；服務不可用時回 `decision:"review"` + `FRAUD_SERVICE_UNAVAILABLE`（不擋驗證）。
   - `verifyAndScore(agent, chain, vc, txContext)` → 憑證有效才評分；`outcome`：pass→`approve`、review→`review`、block→`reject`；憑證無效直接 `reject`。
-  - server 端點：`POST /verify-and-score`（{vc, tx}）、`POST /score`（代理）。
+  - server 端點：`POST /verify-and-score`（{vc, tx}，JWT VC 舊路徑）、`POST /score`（代理）。
+- 錢包主流程端點（SD-JWT）：
+  - `POST /sdjwt/issue`、`POST /sdjwt/issue-reputation`（需 API 金鑰，holderDid 必填，由錢包本機金鑰推導；信譽憑證由中華電信發證者簽）
+  - `POST /sdjwt/nonce` → `{nonce, aud}`（一次性、5 分鐘有效）
+  - `POST /sdjwt/verify` `{presentation, nonce, kind?: "kyc"|"reputation", scenario?: "normal"|"mule"|"microloan"}`：KB 必驗、nonce 一次性；**交易脈絡由伺服器依 scenario 決定，拒收 `tx`**（稽核 H9）
+  - `POST /revoke` `{revocationKey, issuer?: "bank"|"cht"}`（需 API 金鑰；以該發證者的金鑰撤銷，未設金鑰回 501）
 
 ### 2.3 ai-service（M2）
 
 ```
 POST /score
-  req:  { amount, channel, deviceNew, velocity24h, accountAgeDays, ... }
-  resp: { riskScore: 0..1, decision: "allow"|"step_up"|"block", reasons: string[] }
+  req:  ScoreRequest（packages/ai-service/app/schemas.py：amount, type, 餘額四項, tx_count_1h/24h,
+        device_changed, mobile_realname_verified, vc_age_days, account_age_days, payee_risk,
+        threat_intel_hit, payee_fan_in, account_graph_risk …）
+  resp: { risk: 0..100, decision: "pass"|"review"|"block", reasons: string[], source: "model"|"rules",
+          p_fraud, anomaly, confidence, confidence_band, top_factors[], rule_floor_applied }
+  門檻：risk < 40 pass、40–69 review、≥ 70 block；risk = max(模型混合分數, 規則保底)
 ```
 
 ### 2.4 wallet（M2）

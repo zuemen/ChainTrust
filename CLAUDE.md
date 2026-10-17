@@ -45,7 +45,7 @@ SSI（自主權身分）金融身分錢包 + AI 反詐 PoC。核心 Demo 線：*
 
 - 一律用**中文**回答。
 - 操作直接執行、不逐步詢問確認；里程碑結束才暫停回報。
-- 任何階段完成後直接 push 到 `origin`（`https://github.com/zuemen/ChainTrust-`）。
+- 任何階段完成後直接 push 到 `origin`（`https://github.com/zuemen/ChainTrust`；repo 已由 `ChainTrust-` 改名，舊網址會轉址）。
 
 ## 目錄速查
 
