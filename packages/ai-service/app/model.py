@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import threading
 from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
@@ -53,19 +54,32 @@ MODEL_PATH = os.environ.get(
 
 _bundle: dict[str, Any] | None = None
 _load_attempted = False
+# 冷啟動時第一個請求負責載入模型（匯入 lightgbm＋joblib.load 需數秒）。
+# 沒有鎖的話，同時進來的第二個請求會看到 _load_attempted=True 但 _bundle 仍是 None，
+# 於是 /health 回 model_loaded=false、/score 靜默退回規則模式（2026-10-17 線上實測重現）。
+_load_lock = threading.Lock()
 
 
 def _load() -> dict[str, Any] | None:
     global _bundle, _load_attempted
     if _load_attempted:
         return _bundle
-    _load_attempted = True
+    with _load_lock:
+        if _load_attempted:  # 等鎖期間別的請求已載入完成
+            return _bundle
+        _do_load()
+        _load_attempted = True
+    return _bundle
+
+
+def _do_load() -> None:
+    global _bundle
     if not os.path.exists(MODEL_PATH):
         # 不是錯誤（規則 baseline 是設計內的退路），但要能看見自己跑在退化路徑上
         logger.warning(
             "找不到模型檔 %s → /score 降級為規則 baseline（source=\"rules\"）", MODEL_PATH
         )
-        return None
+        return
     try:
         import joblib  # 延遲匯入，無 ML 相依也能用規則
         _bundle = joblib.load(MODEL_PATH)
@@ -77,7 +91,6 @@ def _load() -> dict[str, Any] | None:
             MODEL_PATH,
         )
         _bundle = None
-    return _bundle
 
 
 def model_loaded() -> bool:

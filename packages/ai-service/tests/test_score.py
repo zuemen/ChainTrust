@@ -466,3 +466,29 @@ def test_threat_intel_hit_boosts_risk_and_reason():
     assert "THREAT_INTEL_HIT" in hit["reasons"]
     assert hit["risk"] == base["risk"] + WEIGHTS["THREAT_INTEL_HIT"]
     assert hit["top_factors"][0]["feature"] == "THREAT_INTEL_HIT"
+
+
+def test_model_load_is_race_free_on_cold_start(monkeypatch):
+    """冷啟動時多個請求同時進來，不可有任何一個看到「尚未載入」而退回規則模式。"""
+    import threading
+    import time
+
+    import app.model as m
+
+    real = m._do_load
+
+    def slow_load():
+        time.sleep(0.3)  # 模擬匯入 lightgbm＋joblib.load 的耗時
+        real()
+
+    monkeypatch.setattr(m, "_bundle", None)
+    monkeypatch.setattr(m, "_load_attempted", False)
+    monkeypatch.setattr(m, "_do_load", slow_load)
+    results: list[bool] = []
+    ts = [threading.Thread(target=lambda: results.append(m.model_loaded())) for _ in range(8)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert len(set(results)) == 1, results
+    assert results[0] == os.path.exists(m.MODEL_PATH)

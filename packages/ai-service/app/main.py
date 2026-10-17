@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +12,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from .model import model_loaded, score
 from .schemas import ScoreRequest, ScoreResponse
 
-app = FastAPI(title="ChainTrust AI 反詐服務", version="0.2.0")
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # 啟動時就把模型載進來，不等第一個請求：冷啟動後第一筆 /score 不必多等、也不會落到規則模式
+    model_loaded()
+    yield
+
+
+app = FastAPI(title="ChainTrust AI 反詐服務", version="0.2.0", lifespan=_lifespan)
 
 _METRICS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "metrics.json")
 
