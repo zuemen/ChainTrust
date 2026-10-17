@@ -3,63 +3,83 @@
   "rows": 40000,
   "fraud": 3712,
   "primary_metric": "PR-AUC",
-  "fraud_prevalence": 0.0945,
-  "holdout_pr_auc": 0.8611,
-  "holdout_roc_auc": 0.9271,
-  "holdout_auc": 0.9271,
-  "recall_at_fpr_1pct": 0.8501,
+  "fraud_prevalence": 0.0947,
+  "holdout_pr_auc": 0.8616,
+  "holdout_roc_auc": 0.9259,
+  "holdout_auc": 0.9259,
+  "recall_at_fpr_1pct": 0.8504,
   "precision_at_100": 0.99,
-  "mcc": 0.9023,
-  "threshold": 0.9636,
+  "mcc": 0.9025,
+  "threshold": 0.5,
   "threshold_selection": {
     "method": "max-F1 on validation PR curve (sklearn precision_recall_curve)",
     "note": "候選門檻＝驗證集分數的實際切點，沒有網格下界；先前的 linspace(0.05,0.95) 會把最佳解卡在邊界 0.05。",
     "val_best_f1": 0.9032,
     "applies_to": "p_fraud（校準後機率），非服務端回傳的混合 risk 分數"
   },
-  "recall_at_threshold": 0.8501,
+  "recall_at_threshold": 0.8504,
   "confusion_at_threshold": {
-    "tp": 482,
+    "tp": 483,
     "fp": 12,
     "fn": 85,
-    "tn": 5421
+    "tn": 5420
   },
   "calibration": "isotonic",
   "calibration_quality": {
-    "ece": 0.001,
-    "brier": 0.016,
+    "ece": 0.0007,
+    "brier": 0.0157,
     "reliability_curve": [
       {
-        "pred_mean": 0.0161,
+        "pred_mean": 0.0159,
         "frac_fraud": 0.0154,
-        "count": 5506
+        "count": 5505
+      },
+      {
+        "pred_mean": 0.5,
+        "frac_fraud": 0.0,
+        "count": 1
+      },
+      {
+        "pred_mean": 0.6426,
+        "frac_fraud": 0.0,
+        "count": 1
+      },
+      {
+        "pred_mean": 0.7549,
+        "frac_fraud": 0.6667,
+        "count": 3
+      },
+      {
+        "pred_mean": 0.863,
+        "frac_fraud": 1.0,
+        "count": 1
       },
       {
         "pred_mean": 0.9806,
-        "frac_fraud": 0.9757,
-        "count": 494
+        "frac_fraud": 0.9816,
+        "count": 489
       }
     ]
   },
   "baselines": {
     "rules_only": {
-      "pr_auc": 0.8362,
-      "roc_auc": 0.9129
+      "pr_auc": 0.8352,
+      "roc_auc": 0.9128
     },
     "logistic_regression": {
-      "pr_auc": 0.8732,
+      "pr_auc": 0.8727,
       "roc_auc": 0.9266
     },
     "lightgbm": {
-      "pr_auc": 0.8611,
-      "roc_auc": 0.9271
+      "pr_auc": 0.8616,
+      "roc_auc": 0.9259
     }
   },
   "cht_signal_ablation": {
-    "without_cht_pr_auc": 0.7394,
-    "with_cht_pr_auc": 0.8611,
-    "lift_pr_auc": 0.1216,
-    "lift_pct": 16.45,
+    "without_cht_pr_auc": 0.7412,
+    "with_cht_pr_auc": 0.8616,
+    "lift_pr_auc": 0.1204,
+    "lift_pct": 16.24,
     "signals": [
       "tx_count_1h",
       "tx_count_24h",
@@ -95,61 +115,75 @@
     "decision_thresholds_applied_to": "混合 risk 分數（app/model.py::decide()：<40 pass、40-69 review、>=70 block）",
     "gap": "本檔上方的 PR-AUC / ROC-AUC / ECE / Brier / threshold 都算在 p_fraud 上，但服務端拿來做決策的是混合分數；IsolationForest 那 30% 未被上方指標與校準涵蓋。下方 blended_risk_evaluation 為混合分數的直接評估，兩者請一併看。",
     "blended_risk_evaluation": {
-      "pr_auc": 0.8633,
-      "roc_auc": 0.9144,
-      "pr_auc_delta_vs_p_fraud": 0.0022,
+      "pr_auc": 0.863,
+      "roc_auc": 0.914,
+      "pr_auc_delta_vs_p_fraud": 0.0014,
       "at_serving_block_threshold": {
-        "recall": 0.8501,
-        "precision": 0.9757
+        "recall": 0.8468,
+        "precision": 0.9816
       },
       "at_serving_review_threshold": {
-        "recall": 0.8501,
-        "precision": 0.9757
+        "recall": 0.8504,
+        "precision": 0.9758
       },
       "note": "混合分數未經校準，數值不應被解讀為詐欺機率。"
+    },
+    "served_with_rule_floor": {
+      "floor_triggered_rows": 0,
+      "at_serving_block_threshold": {
+        "recall": 0.8468,
+        "precision": 0.9816
+      },
+      "at_serving_review_threshold": {
+        "recall": 0.8504,
+        "precision": 0.9758
+      },
+      "false_positive_rate_review_or_block": 0.0022,
+      "formula": "risk = max(blended_risk, rule_floor(reason_codes))",
+      "note": "這才是 /score 實際回傳並據以 pass/review/block 的分數。保底只看金流紅旗（MULE_PATTERN／MULE_RING／反覆拆分 STRUCTURING+VELOCITY→70；PASS_THROUGH／RAPID_MOVEMENT／FAN_IN_COLLECTION→40），刻意排除身分類訊號以免放大對薄檔族群的偏誤。"
     }
   },
   "split": "out-of-time (by step)",
   "top_feature_importances": [
     {
-      "feature": "drain_ratio",
-      "importance": 289
-    },
-    {
       "feature": "account_age_days",
-      "importance": 278
+      "importance": 304
     },
     {
       "feature": "vc_age_days",
-      "importance": 271
+      "importance": 258
+    },
+    {
+      "feature": "drain_ratio",
+      "importance": 224
+    },
+    {
+      "feature": "newbalanceDest",
+      "importance": 214
     },
     {
       "feature": "payee_risk",
-      "importance": 201
+      "importance": 200
     },
     {
       "feature": "errorBalanceDest",
       "importance": 199
     },
     {
-      "feature": "oldbalanceDest",
-      "importance": 182
-    },
-    {
-      "feature": "newbalanceDest",
-      "importance": 181
-    },
-    {
-      "feature": "tx_count_24h",
-      "importance": 179
+      "feature": "amount",
+      "importance": 196
     },
     {
       "feature": "cross_institution_presentations",
-      "importance": 179
+      "importance": 189
     },
     {
-      "feature": "amount",
-      "importance": 172
+      "feature": "oldbalanceDest",
+      "importance": 177
+    },
+    {
+      "feature": "tx_count_24h",
+      "importance": 167
     },
     {
       "feature": "newbalanceOrig",
@@ -157,7 +191,7 @@
     },
     {
       "feature": "oldbalanceOrg",
-      "importance": 134
+      "importance": 151
     }
   ]
 }

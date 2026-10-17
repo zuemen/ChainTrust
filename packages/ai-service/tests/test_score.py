@@ -68,14 +68,60 @@ def test_decision_thresholds():
     assert decide(100) == "block"
 
 
-def test_demo_samples_pass_and_block():
-    """正常→pass、人頭→block（不論用 model 或 rules 都應成立）。"""
+def test_demo_samples_match_expected_decision():
+    """每一筆 demo 樣本都要符合其 expect（pass / review / block 三種都斷言）。
+
+    舊版只檢查 pass 與 block，標成 review 的樣本等於沒有測試保護。
+    """
     for s in _samples():
         r = client.post("/score", json=s["ctx"])
         assert r.status_code == 200
         body = r.json()
-        if s["expect"] in ("pass", "block"):
-            assert body["decision"] == s["expect"], f"{s['label']}: {body}"
+        assert s["expect"] in ("pass", "review", "block"), s["label"]
+        assert body["decision"] == s["expect"], f"{s['label']}: {body}"
+
+
+# ── 規則保底（三層互補的規則層）──
+def test_rule_floor_levels():
+    from app.model import rule_floor, PASS_MAX, BLOCK_MIN
+
+    assert rule_floor([]) == 0
+    assert rule_floor(["PASS_THROUGH"]) == PASS_MAX
+    assert rule_floor(["RAPID_MOVEMENT"]) == PASS_MAX
+    assert rule_floor(["MULE_PATTERN"]) == BLOCK_MIN
+    assert rule_floor(["PASS_THROUGH", "MULE_RING"]) == BLOCK_MIN
+    # 反覆拆分（貼門檻 + 高頻）是強紅旗；單筆貼門檻只是巧合，不保底
+    assert rule_floor(["STRUCTURING", "VELOCITY"]) == BLOCK_MIN
+    assert rule_floor(["STRUCTURING"]) == 0
+
+
+def test_rule_floor_ignores_identity_signals():
+    """身分類訊號（薄檔族群天生會踩到）不得觸發保底，避免放大偏誤（model card §6）。"""
+    from app.model import rule_floor
+
+    assert rule_floor(["NO_REALNAME", "NEW_ACCOUNT", "DEVICE_CHANGE", "GEO_JUMP"]) == 0
+    assert rule_floor(["NO_REALNAME", "NEW_ACCOUNT", "HIGH_PAYEE_RISK", "CROSS_INST_REUSE"]) == 0
+
+
+def test_rule_floor_lifts_ood_verified_drain_to_review():
+    """模型對訓練分佈外的「已實名老帳戶清空提領」可能給低分；保底保證至少交人工複核。"""
+    ctx = next(s for s in _samples() if s["label"] == "pass_through_verified_drain")["ctx"]
+    body = client.post("/score", json=ctx).json()
+    assert "PASS_THROUGH" in body["reasons"]
+    assert body["decision"] in ("review", "block")
+    assert body["risk"] >= 40
+
+
+def test_rule_floor_flag_reported():
+    """保底生效時回應要標示出來，前端與稽核才看得到「這是規則拉上來的，不是模型判的」。"""
+    from app.model import score
+
+    ctx = next(s for s in _samples() if s["label"] == "pass_through_verified_drain")["ctx"]
+    r = score(ctx)
+    if r.source == "model" and (r.p_fraud or 0) < 0.3:
+        assert r.rule_floor_applied is True
+    normal = next(s for s in _samples() if s["label"] == "normal_payment")["ctx"]
+    assert score(normal).rule_floor_applied is False
 
 
 def test_mule_reasons():

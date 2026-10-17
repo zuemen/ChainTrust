@@ -20,6 +20,32 @@ from .schemas import ScoreResponse, TopFactor
 PASS_MAX = 40   # risk < 40 → pass
 BLOCK_MIN = 70  # risk >= 70 → block；中間為 review
 
+# ── 規則保底（三層互補中的「規則層」）──────────────────────────
+# 模型從資料學習，遇到訓練分佈外（OOD）的案例時可能給出很低的分數。實例：
+# 「已實名、500 天老帳戶、一次提領 95% 餘額」——合成資料裡的金流型詐欺全是新帳戶，
+# 模型因此學到「老帳戶清空 ≈ 安全」，在套件版本更新後會把這筆判成 pass（risk 23）。
+# 這類 AML／打詐法規明文定義的金流紅旗樣態，不能讓模型一個分數就抹掉：
+#   - 強紅旗 → 至少 block：人頭金流（MULE_PATTERN）、人頭環（MULE_RING）、
+#     **反覆**拆分（STRUCTURING 且 VELOCITY：短時間多筆貼著通報門檻）
+#   - 樣態紅旗 → 至少 review（交人工判斷）：過水、快速資金移動、聚合戶
+# 單筆金額貼近門檻（只有 STRUCTURING、沒有 VELOCITY）**不**觸發保底：實測在 holdout 上
+# 會把 75 筆正常交易拉進 review、只多抓到 1 筆詐欺——單筆 9,9xx 元大多只是巧合，
+# 拆分的證據在於「重複」。
+# 刻意**不**納入身分類訊號（未實名、新帳戶、裝置變更…）：那些正是無聯徵薄檔族群
+# 天生會踩到的訊號（見 docs/model-card.md §6 偏誤聲明），讓它們觸發保底等於放大歧視。
+BLOCK_FLOOR_CODES = frozenset({"MULE_PATTERN", "MULE_RING"})
+REVIEW_FLOOR_CODES = frozenset({"PASS_THROUGH", "RAPID_MOVEMENT", "FAN_IN_COLLECTION"})
+
+
+def rule_floor(codes: list[str]) -> int:
+    """依觸發的金流紅旗回傳風險分數下限（0 = 無保底）。"""
+    c = set(codes)
+    if c & BLOCK_FLOOR_CODES or {"STRUCTURING", "VELOCITY"} <= c:
+        return BLOCK_MIN
+    if c & REVIEW_FLOOR_CODES:
+        return PASS_MAX
+    return 0
+
 MODEL_PATH = os.environ.get(
     "MODEL_PATH",
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "model.joblib"),
@@ -119,6 +145,9 @@ def score(row: Mapping[str, Any]) -> ScoreResponse:
     bundle = _load()
     if bundle is None:
         risk, codes = rule_risk(row)
+        floor = rule_floor(codes)
+        floored = floor > risk
+        risk = max(risk, floor)
         conf = rule_confidence(risk)
         return ScoreResponse(
             risk=risk,
@@ -128,6 +157,7 @@ def score(row: Mapping[str, Any]) -> ScoreResponse:
             confidence=conf,
             confidence_band=confidence_band(conf),
             top_factors=_top_factors_from_rules(codes),
+            rule_floor_applied=floored,
         )
 
     feature_order = bundle.get("feature_list", FEATURE_ORDER)
@@ -159,6 +189,11 @@ def score(row: Mapping[str, Any]) -> ScoreResponse:
     if "THREAT_INTEL_HIT" in codes:
         risk = max(0, min(100, risk + WEIGHTS["THREAT_INTEL_HIT"]))
 
+    # 規則保底：金流紅旗樣態至少 review／block（見檔頭 rule_floor 說明）
+    floor = rule_floor(codes)
+    floored = floor > risk
+    risk = max(risk, floor)
+
     # top_factors：優先用模型 SHAP 貢獻；取不到則退回規則權重
     top = _top_factors_from_model(bundle, x)
     if not top:
@@ -184,4 +219,5 @@ def score(row: Mapping[str, Any]) -> ScoreResponse:
         confidence=conf,
         confidence_band=confidence_band(conf),
         top_factors=top,
+        rule_floor_applied=floored,
     )

@@ -67,7 +67,8 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          # 與 packages/ai-service/Dockerfile 一致；requirements.txt 釘死的 numpy 2.5 需要 3.12+
+          python-version: "3.13"
           cache: pip
           cache-dependency-path: packages/ai-service/requirements.txt
 
@@ -96,11 +97,16 @@ jobs:
       - name: Validate docker-compose.yml
         run: docker compose config --quiet
 
-      # nginx.conf 是 envsubst 樣板，先展開再驗（直接餵樣板會因 ${...} 未展開而誤判）
+      # nginx.conf 是 envsubst 樣板，先展開再驗（直接餵樣板會因 ${...} 未展開而誤判）。
+      # 三個佔位符都要給值：漏給的會原樣留成 ${...}，nginx 把它當成未定義變數而失敗。
+      # 上游刻意用 127.0.0.1 而非 compose 的服務名 issuer-verifier：nginx -t 會在啟動時
+      # 解析 proxy_pass 的主機名，單獨跑的容器裡解析不到服務名，這個 job 先前就是一直卡在這裡。
       - name: Validate wallet nginx.conf.template
         run: |
           docker run --rm \
             -e CHAINTRUST_API_KEY=ci-dummy-key \
+            -e CHAINTRUST_IV_URL=http://127.0.0.1:3001 \
+            -e CHAINTRUST_IV_HOST=127.0.0.1 \
             -v "$PWD/packages/wallet/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro" \
             nginxinc/nginx-unprivileged:1.27-alpine \
             sh -c '/docker-entrypoint.sh nginx -t'

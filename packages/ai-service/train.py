@@ -40,8 +40,8 @@ sys.path.insert(0, HERE)
 
 from app.featurize import FEATURE_ORDER, featurize  # noqa: E402
 from app.graph import compute_account_graph, apply_graph_features  # noqa: E402
-from app.model import BLOCK_MIN, PASS_MAX  # noqa: E402
-from app.rules import rule_risk  # noqa: E402
+from app.model import BLOCK_MIN, PASS_MAX, rule_floor  # noqa: E402
+from app.rules import reason_codes, rule_risk  # noqa: E402
 
 DATA_CSV = os.path.join(HERE, "data", "paysim.csv")
 MODEL_OUT = os.path.join(HERE, "model.joblib")
@@ -295,6 +295,34 @@ def main() -> None:
         f"  risk>=70 recall={serving_block['recall']:.4f} precision={serving_block['precision']:.4f}"
     )
 
+    # ── 加上規則保底後的「實際服務決策」評估 ──
+    # app/model.py::score() 最後會做 risk = max(risk, rule_floor(codes))。
+    # 保底會多抓到一些詐欺，也可能多誤攔一些正常交易；兩邊都要量出來，不能只說好處。
+    floors = np.array([rule_floor(reason_codes(r)) for r in test.to_dict("records")], dtype=float)
+    served = np.maximum(blended * 100, floors)
+    srv_blk = (served >= BLOCK_MIN).astype(int)
+    srv_rev = (served >= PASS_MAX).astype(int)
+    served_eval = {
+        "floor_triggered_rows": int((floors > blended * 100).sum()),
+        "at_serving_block_threshold": {
+            "recall": round(float(recall_score(yte, srv_blk, zero_division=0)), 4),
+            "precision": round(float(precision_score(yte, srv_blk, zero_division=0)), 4),
+        },
+        "at_serving_review_threshold": {
+            "recall": round(float(recall_score(yte, srv_rev, zero_division=0)), 4),
+            "precision": round(float(precision_score(yte, srv_rev, zero_division=0)), 4),
+        },
+        "false_positive_rate_review_or_block": round(
+            float(((srv_rev == 1) & (yte == 0)).sum() / max(1, int((yte == 0).sum()))), 4
+        ),
+    }
+    print(
+        f"[train] 加規則保底後：保底生效 {served_eval['floor_triggered_rows']} 筆；"
+        f"review+block recall={served_eval['at_serving_review_threshold']['recall']:.4f} "
+        f"precision={served_eval['at_serving_review_threshold']['precision']:.4f} "
+        f"FPR={served_eval['false_positive_rate_review_or_block']:.4f}"
+    )
+
     joblib.dump(
         {
             "lgbm": clf, "calibrator": calibrated, "iso": iso,
@@ -416,6 +444,16 @@ def main() -> None:
                 "at_serving_block_threshold": serving_block,
                 "at_serving_review_threshold": serving_review_or_block,
                 "note": "混合分數未經校準，數值不應被解讀為詐欺機率。",
+            },
+            "served_with_rule_floor": {
+                **served_eval,
+                "formula": "risk = max(blended_risk, rule_floor(reason_codes))",
+                "note": (
+                    "這才是 /score 實際回傳並據以 pass/review/block 的分數。保底只看金流紅旗"
+                    "（MULE_PATTERN／MULE_RING／反覆拆分 STRUCTURING+VELOCITY→70；"
+                    "PASS_THROUGH／RAPID_MOVEMENT／FAN_IN_COLLECTION→40），"
+                    "刻意排除身分類訊號以免放大對薄檔族群的偏誤。"
+                ),
             },
         },
         "split": "out-of-time (by step)",

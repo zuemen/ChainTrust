@@ -1,5 +1,5 @@
 {
-  "source": "PaySim + 半合成 CHT 訊號 (D:\\ChainTrust\\packages\\ai-service\\data\\paysim.csv)",
+  "source": "PaySim + 半合成 CHT 訊號 (packages/ai-service/data/paysim.csv)",
   "rows": 6362620,
   "fraud": 8213,
   "primary_metric": "PR-AUC",

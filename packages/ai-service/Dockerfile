@@ -1,5 +1,5 @@
 # context = repo root（見 docker-compose.yml）
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 # lightgbm 需要 libgomp
 RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \

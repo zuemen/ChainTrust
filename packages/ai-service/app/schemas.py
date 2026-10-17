@@ -79,3 +79,5 @@ class ScoreResponse(BaseModel):
     confidence_band: Literal["high", "medium", "low"] | None = None
     # 可解釋：本筆判斷的前幾大推升因素
     top_factors: list[TopFactor] = Field(default_factory=list)
+    # 規則保底是否把分數往上拉（金流紅旗樣態不得被模型分數抹掉，見 app/model.py::rule_floor）
+    rule_floor_applied: bool = False

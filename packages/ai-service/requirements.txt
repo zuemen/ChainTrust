@@ -1,14 +1,20 @@
-# 主要相依一律「下界 + 上界」：下界＝實際用到的 API 出現版本，上界＝下一個 major
-# （避免 major bump 靜默破壞已 commit 的 model.joblib 與訓練/推論行為）。
-fastapi>=0.110,<1.0
-uvicorn[standard]>=0.29,<1.0
-pydantic>=2.6,<3.0
-lightgbm>=4.3,<5.0
-# train.py 使用 sklearn.frozen.FrozenEstimator（取代舊 cv="prefit"），該模組自 1.6 才存在。
-# 先前寫 >=1.4 會在 1.4/1.5 上 ImportError。
-scikit-learn>=1.6,<2.0
-pandas>=2.2,<4.0
-numpy>=1.26,<3.0
-joblib>=1.4,<2.0
-pytest>=8.0,<10.0
-httpx>=0.27,<1.0
+# 全部釘死精確版本（==）。
+#
+# 為什麼不再用範圍：Docker 建置、CI、本機三處都會重新跑 train.py。先前用「下界＋上界」，
+# 每次安裝都抓當下最新版，LightGBM／scikit-learn／numpy 一升級，同一份種子訓練出來的
+# 模型就不一樣——PR-AUC 從 0.8611 漂到 0.8616、demo 樣本的判定翻面、CI 時紅時綠，
+# 簡報上的數字也跟線上服務對不起來。釘死版本後三處訓練結果一致、可重現。
+#
+# Python 版本同步釘在 3.13（Dockerfile 與 .github/workflows/ci.yml）：numpy 2.5 不支援 3.11。
+# 要升級：改這裡 → 本機 `pnpm ai:train` → 確認 pytest 綠 → 連同新的 metrics.json 一起 commit。
+fastapi==0.143.3
+uvicorn[standard]==0.54.0
+pydantic==2.14.1
+lightgbm==4.7.0
+scikit-learn==1.9.1
+scipy==1.18.1
+pandas==3.0.6
+numpy==2.5.4
+joblib==1.6.0
+pytest==9.1.1
+httpx==0.28.1
