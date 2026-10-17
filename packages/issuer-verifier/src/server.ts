@@ -1,5 +1,5 @@
 import express from "express";
-import { createVeramoAgent, createIssuerDid, createHolderDid } from "./agent.js";
+import { createVeramoAgent, resolveIssuerDid } from "./agent.js";
 import {
   InMemoryChainGateway,
   EthersChainGateway,
@@ -19,6 +19,7 @@ import {
 import { randomUUID, timingSafeEqual } from "crypto";
 import { scoreTransaction, fetchMetrics, warmUpFraudService } from "./fraud.js";
 import { issuerAddressFromIdentifier } from "./credentialHash.js";
+import { TX_SCENARIOS, isScenarioId, type ScenarioId } from "./scenarios.js";
 import { config } from "./config.js";
 import type { IIdentifier } from "@veramo/core";
 
@@ -26,22 +27,59 @@ import type { IIdentifier } from "@veramo/core";
  * Issuer/Verifier HTTP 服務（PoC）。
  * 啟動時建立一個示範 Issuer DID 並由（記憶體）信任根背書，方便前端/curl 直接試。
  */
+/** 以指定私鑰建立 ethers 閘道（無私鑰＝唯讀）。 */
+function ethersGateway(privateKey?: string): EthersChainGateway {
+  // 部署檔網路名不再寫死 "amoy"：切到 CHT BaaS 或其他測試網時，
+  // 讀到另一條鏈的合約位址只會靜默回 false，不會有人發現。
+  const net = config.deploymentNetwork;
+  const dep = loadDeployment(net);
+  if (!dep) throw new Error(`CHAIN_MODE=ethers 但缺 deployments/${net}.json`);
+  return new EthersChainGateway({
+    rpcUrl: config.amoyRpcUrl,
+    issuerRegistry: dep.contracts.IssuerRegistry,
+    revocationRegistry: dep.contracts.RevocationRegistry,
+    privateKey,
+    expectedChainId: config.ethrChainId,
+  });
+}
+
 async function buildChain(): Promise<ChainGateway> {
-  if (config.chainMode === "ethers") {
-    // 部署檔網路名不再寫死 "amoy"：切到 CHT BaaS 或其他測試網時，
-    // 讀到另一條鏈的合約位址只會靜默回 false，不會有人發現。
-    const net = config.deploymentNetwork;
-    const dep = loadDeployment(net);
-    if (!dep) throw new Error(`CHAIN_MODE=ethers 但缺 deployments/${net}.json`);
-    return new EthersChainGateway({
-      rpcUrl: config.amoyRpcUrl,
-      issuerRegistry: dep.contracts.IssuerRegistry,
-      revocationRegistry: dep.contracts.RevocationRegistry,
-      privateKey: config.chainPrivateKey,
-      expectedChainId: config.ethrChainId,
-    });
-  }
+  // 主閘道以信任根 owner 金鑰簽（setTrustedIssuer）；撤銷另由各發證者自己的金鑰送出，見 buildRevokers
+  if (config.chainMode === "ethers") return ethersGateway(config.chainPrivateKey);
   return new InMemoryChainGateway();
+}
+
+/** 發證者識別：bank = 銀行 A（KYC）、cht = 中華電信（門號實名、繳費信譽） */
+type IssuerKey = "bank" | "cht";
+type Revoker = (credentialHash: string) => Promise<void>;
+
+/**
+ * 每個發證者各自的撤銷器。
+ *
+ * RevocationRegistry 以 msg.sender 為撤銷命名空間（H12 修正），驗證端以「憑證簽發者位址」查詢，
+ * 所以撤銷交易**必須**由簽發該憑證的那把金鑰送出。舊版一律用 CHAIN_PRIVATE_KEY 送，
+ * 撤銷寫進部署者的格子，驗證端查發證者的格子——撤銷永遠不生效；memory 模式則因為從沒
+ * 呼叫 setRevokeAs() 直接回 500。
+ */
+function buildRevokers(
+  chain: ChainGateway,
+  issuers: Record<IssuerKey, { addr: string; privateKey?: string }>
+): Record<IssuerKey, Revoker | null> {
+  if (chain instanceof InMemoryChainGateway) {
+    const asIssuer = (addr: string): Revoker => async (hash) => {
+      // setRevokeAs 與 revoke 之間沒有 await，同步完成，不會被其他請求插隊
+      chain.setRevokeAs(addr);
+      await chain.revoke(hash);
+    };
+    return { bank: asIssuer(issuers.bank.addr), cht: asIssuer(issuers.cht.addr) };
+  }
+  const forKey = (k: IssuerKey): Revoker | null => {
+    const key = issuers[k].privateKey;
+    if (!key) return null;
+    const g = key === config.chainPrivateKey ? chain : ethersGateway(key);
+    return (hash) => g.revoke(hash);
+  };
+  return { bank: forKey("bank"), cht: forKey("cht") };
 }
 
 /**
@@ -51,12 +89,22 @@ async function buildChain(): Promise<ChainGateway> {
 export async function createApp(): Promise<{ app: express.Express; issuer: IIdentifier; chain: ChainGateway }> {
   const agent = createVeramoAgent();
   const chain = await buildChain();
-  const issuer = await createIssuerDid(agent);
+  // 發證者金鑰：有設 ISSUER_PRIVATE_KEY / CHT_ISSUER_PRIVATE_KEY 就固定（重啟不換 DID），
+  // 沒設就隨機產生（只存記憶體，重啟必換）。
+  const issuer = await resolveIssuerDid(agent, "issuer", config.issuerPrivateKey);
   const issuerAddr = issuerAddressFromIdentifier(issuer);
-  // 第二發證者：中華電信門號電子卡（雙簽發者＝多機構信任網路最小示範）
-  const issuerCht = await createIssuerDid(agent, "issuer-cht-mobile");
+  // 第二發證者：中華電信（門號實名、繳費信譽）——雙簽發者＝多機構信任網路最小示範
+  const issuerCht = await resolveIssuerDid(agent, "issuer-cht-mobile", config.chtIssuerPrivateKey);
   const issuerChtAddr = issuerAddressFromIdentifier(issuerCht);
-  // 自動背書示範 issuer：金鑰僅存記憶體，重啟後 issuer 位址必變，須重新背書。
+  console.log(
+    `[issuer-verifier] 發證者 DID：銀行 A ${config.issuerPrivateKey ? "固定" : "隨機（重啟會換）"}、` +
+      `中華電信 ${config.chtIssuerPrivateKey ? "固定" : "隨機（重啟會換）"}`
+  );
+  const revokers = buildRevokers(chain, {
+    bank: { addr: issuerAddr, privateKey: config.issuerPrivateKey },
+    cht: { addr: issuerChtAddr, privateKey: config.chtIssuerPrivateKey },
+  });
+  // 自動背書示範 issuer（信任根狀態在 memory 模式只存記憶體，每次啟動都要重設）。
   // memory 模式直接設；ethers 模式需 CHAIN_PRIVATE_KEY 為 IssuerRegistry owner（PoC 中即 deployer）。
   if (config.chainMode === "memory") {
     await chain.setTrustedIssuer(issuerAddr, true);
@@ -179,8 +227,10 @@ export async function createApp(): Promise<{ app: express.Express; issuer: IIden
       if (!holderDid) return res.status(400).json({ error: "缺 holderDid（請由錢包本機金鑰推導）" });
       if (!isValidHolderDid(holderDid))
         return res.status(400).json({ error: "holderDid 不是合法的 did:key（Secp256k1）" });
-      const vc = await issueReputationSdJwt({ issuer, holderDid, msisdn }, agent);
-      res.json({ vc, holderDid, issuerDid: issuer.did });
+      // 繳費信譽來自電信帳務 → 由中華電信發證者簽（錢包畫面也標示「發證方：中華電信」）。
+      // 舊版誤用銀行 A 的 issuer，與 KYC 憑證顯示同一個 DID，和畫面敘述矛盾。
+      const vc = await issueReputationSdJwt({ issuer: issuerCht, holderDid, msisdn }, agent);
+      res.json({ vc, holderDid, issuerDid: issuerCht.did });
     } catch (e: any) {
       serverError(res, e);
     }
@@ -250,13 +300,23 @@ export async function createApp(): Promise<{ app: express.Express; issuer: IIden
   // 驗證 SD-JWT 出示（含 key binding）+ AI 風險評分 → 綜合 outcome
   app.post("/sdjwt/verify", async (req, res) => {
     try {
-      const { presentation, tx, kind } = req.body ?? {};
+      const { presentation, kind, scenario } = req.body ?? {};
       if (typeof presentation !== "string" || presentation.length === 0) {
         return res.status(400).json({ error: "缺 presentation（需為字串）" });
       }
       if (kind != null && kind !== "kyc" && kind !== "reputation") {
         return res.status(400).json({ error: "kind 僅接受 kyc 或 reputation" });
       }
+      // 交易脈絡由驗證方決定，不收出示者自己報的數值（H9）。見 src/scenarios.ts。
+      if ((req.body ?? {}).tx !== undefined) {
+        return res.status(400).json({
+          error: "不接受 tx：交易脈絡由驗證方伺服器決定，請改傳 scenario（normal / mule / microloan）",
+        });
+      }
+      if (scenario != null && !isScenarioId(scenario)) {
+        return res.status(400).json({ error: `scenario 僅接受：${Object.keys(TX_SCENARIOS).join(" / ")}` });
+      }
+      const scenarioId: ScenarioId = scenario ?? (kind === "reputation" ? "microloan" : "normal");
       // nonce 為必要項且必須是本方核發、未過期、未用過。
       //
       // 舊版把 requireKeyBinding / expectedNonce / expectedAud 交給 request body 決定：
@@ -278,20 +338,17 @@ export async function createApp(): Promise<{ app: express.Express; issuer: IIden
       let risk;
       let outcome: "approve" | "review" | "reject" = "reject";
       if (verify.ok) {
-        risk = await scoreTransaction(tx ?? {});
+        risk = await scoreTransaction({ ...TX_SCENARIOS[scenarioId] });
         outcome = risk.decision === "block" ? "reject" : risk.decision === "review" ? "review" : "approve";
       }
-      res.json({ verify, risk, outcome });
+      res.json({ verify, risk, outcome, scenario: scenarioId });
     } catch (e: any) {
       serverError(res, e);
     }
   });
 
-  // 建立一個新的 Holder DID（demo 用）
-  app.post("/holder", async (_req, res) => {
-    const holder = await createHolderDid(agent, `holder-${Date.now()}`);
-    res.json({ did: holder.did });
-  });
+  // （已移除）POST /holder：未鑑權即可在伺服器端產生持有者金鑰——既與「金鑰自主、伺服器不代管」
+  // 的主張矛盾，也讓任何人迴圈呼叫就能無限增長記憶體。錢包一律在瀏覽器端自產金鑰。
 
   // 簽發 KYC VC
   app.post("/issue/kyc", requireApiKey, async (req, res) => {
@@ -367,15 +424,33 @@ export async function createApp(): Promise<{ app: express.Express; issuer: IIden
     }
   });
 
-  // 撤銷 VC（dev：記憶體或具私鑰的 ethers 模式）
+  // 撤銷 VC。issuer 指定由哪個發證者撤銷（預設 bank）——撤銷只對「該發證者簽發的憑證」生效。
   app.post("/revoke", requireApiKey, async (req, res) => {
     try {
-      const { revocationKey } = req.body ?? {};
+      const { revocationKey, issuer: who = "bank" } = req.body ?? {};
       if (typeof revocationKey !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(revocationKey)) {
         return res.status(400).json({ error: "revocationKey 需為 0x 開頭的 bytes32" });
       }
-      await chain.revoke(revocationKey);
-      res.json({ revoked: true, revocationKey });
+      if (who !== "bank" && who !== "cht") {
+        return res.status(400).json({ error: "issuer 僅接受 bank 或 cht" });
+      }
+      const revoke = revokers[who as IssuerKey];
+      if (!revoke) {
+        return res.status(501).json({
+          error: "revocation_unavailable_for_issuer",
+          detail:
+            who === "bank"
+              ? "未設定 ISSUER_PRIVATE_KEY（或 CHAIN_PRIVATE_KEY），無法以發證者身分送出撤銷交易"
+              : "未設定 CHT_ISSUER_PRIVATE_KEY，無法以中華電信發證者身分送出撤銷交易",
+        });
+      }
+      await revoke(revocationKey);
+      res.json({
+        revoked: true,
+        revocationKey,
+        issuer: who,
+        issuerAddr: who === "bank" ? issuerAddr : issuerChtAddr,
+      });
     } catch (e: any) {
       serverError(res, e);
     }

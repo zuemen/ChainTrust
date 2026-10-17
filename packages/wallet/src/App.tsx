@@ -7,7 +7,7 @@ import {
   verifyPresentation,
   healthAwaitingWake,
   getMetrics,
-  type TxContext,
+  type ScenarioId,
   type VerifyResponse,
   type ModelMetrics,
   type MobileVc,
@@ -75,8 +75,17 @@ const REASON_LABELS: Record<string, string> = {
   HIGH_PAYEE_RISK: "收款方高風險",
   CROSS_INST_REUSE: "跨機構頻繁出示",
   MODEL_ANOMALY: "模型偵測到異常樣態",
+  THREAT_INTEL_HIT: "CHT Security 情資命中（通報詐欺/人頭帳戶）",
   FRAUD_SERVICE_UNAVAILABLE: "反詐服務暫時無法連線（保守標記）",
 };
+
+/** 原因碼中文化；FRAUD_HTTP_<碼> 為反詐服務回錯誤狀態 */
+function reasonLabel(code: string): string {
+  if (REASON_LABELS[code]) return REASON_LABELS[code];
+  const http = /^FRAUD_HTTP_(\d{3})$/.exec(code);
+  if (http) return `反詐服務回應異常（HTTP ${http[1]}），保守標記為人工複核`;
+  return code;
+}
 
 /**
  * 導覽區塊：第一次開這個網址的人（例如評審）需要在三秒內知道
@@ -351,33 +360,16 @@ function isLocalHost(): boolean {
 
 const CONF_LABELS: Record<string, string> = { high: "高信心", medium: "中等信心", low: "低信心" };
 
-const SCENARIOS: Record<string, { title: string; desc: string; tx: TxContext }> = {
+// 出示情境（只有顯示文字；交易數值由驗證方伺服器持有，見 issuer-verifier src/scenarios.ts）
+const SCENARIOS: Record<"normal" | "mule", { title: string; desc: string }> = {
   normal: {
     title: "正常交易",
     desc: "小額消費 NT$1,280，已實名、老帳戶",
-    tx: {
-      type: "PAYMENT", amount: 1280, oldbalanceOrg: 52000, newbalanceOrig: 50720,
-      mobile_realname_verified: true, account_age_days: 900, payee_risk: 0.05,
-      tx_count_1h: 1, tx_count_24h: 4,
-    },
   },
   mule: {
     title: "高風險大額轉帳（疑似人頭）",
     desc: "NT$920,000 轉出清空帳戶、未實名、新帳戶、裝置/地理異常",
-    tx: {
-      type: "TRANSFER", amount: 920000, oldbalanceOrg: 1000000, newbalanceOrig: 0,
-      mobile_realname_verified: false, tx_count_1h: 8, tx_count_24h: 41,
-      device_changed: true, geo_jump: true, account_age_days: 2, payee_risk: 0.92,
-      cross_institution_presentations: 13,
-    },
   },
-};
-
-// 普惠情境：微型貸款撥款（小額、已實名，AI 照常評分把關普惠通道）
-const MICROLOAN_TX: TxContext = {
-  type: "CASH_IN", amount: 30000, oldbalanceOrg: 8000, newbalanceOrig: 38000,
-  mobile_realname_verified: true, account_age_days: 540, payee_risk: 0.02,
-  tx_count_1h: 1, tx_count_24h: 2,
 };
 
 // 各出示情境的必要 claim（述詞用，不可取消勾選）
@@ -718,8 +710,9 @@ export function App() {
       const signer = getKeyBindingSigner();
       const presentation = buildPresentationWithKeyBinding(activeParsed, [...reveal], challenge, signer);
       // KB 必驗與 aud 由驗證方伺服器強制，前端只回傳挑戰 nonce
-      const tx = requestKind === "reputation" ? MICROLOAN_TX : SCENARIOS[scenario].tx;
-      const res = await verifyPresentation(presentation, tx, requestKind, { nonce: challenge.nonce });
+      // 只送情境 ID：交易數值由驗證方伺服器決定，錢包無從竄改（H9）
+      const scenarioId: ScenarioId = requestKind === "reputation" ? "microloan" : scenario;
+      const res = await verifyPresentation(presentation, scenarioId, requestKind, { nonce: challenge.nonce });
       setResult(res); setStage("result");
     } catch (e: unknown) { setError(errMsg(e)); }
     finally { setBusy(false); setChallenge(null); }
@@ -868,7 +861,7 @@ export function App() {
                   <div className="cred-row"><span>門號</span><b>{mobileVc.credentialSubject.msisdnMasked}</b></div>
                   <div className="cred-row"><span>實名驗證</span><b>{mobileVc.credentialSubject.msisdnVerified ? "✓ 已通過" : "✗ 未通過"}</b></div>
                 </div>
-                <p className="hint">🏛 與 KYC 憑證來自不同發證者，但由同一個鏈上信任根（IssuerRegistry）背書。</p>
+                <p className="hint">與 KYC 憑證來自不同發證者，但由同一個鏈上信任根（IssuerRegistry）背書。</p>
                 <button className="btn ghost" disabled={busy} onClick={() => handleDeleteCredential("mobile", "門號實名憑證")}>刪除憑證</button>
               </div>
             )}
@@ -1063,8 +1056,14 @@ export function App() {
               )}
               {list<string>(result.risk.reasons).length > 0 && (
                 <ul className="reasons">
-                  {list<string>(result.risk.reasons).map((rc) => <li key={rc}>{REASON_LABELS[rc] ?? rc}</li>)}
+                  {list<string>(result.risk.reasons).map((rc) => <li key={rc}>{reasonLabel(rc)}</li>)}
                 </ul>
+              )}
+              {result.risk.rule_floor_applied === true && (
+                <p className="hint">
+                  規則保底：此交易命中金流紅旗樣態，模型分數雖低仍依規則至少列入
+                  {result.risk.decision === "block" ? "攔截" : "人工複核"}——三層防線（規則＋模型＋情資）互補，不讓單一模型分數抹掉已知紅旗。
+                </p>
               )}
               {list<{ feature: string; label: string; impact: number }>(result.risk.top_factors).length > 0 && (
                 <div style={{ marginTop: 10 }}>
@@ -1464,7 +1463,8 @@ function Outcome({ r, kind }: { r: VerifyResponse; kind: PresentationKind }) {
     review: { cls: "review", Icon: IcoAlert, title: "需人工複核", sub: "憑證有效，但交易風險偏高" },
     reject: { cls: "reject", Icon: IcoBan, title: "交易已攔截", sub: r.verify.ok ? "AI 判定高風險（疑似人頭/盜用）" : `憑證驗證失敗：${r.verify.reason ?? ""}` },
   };
-  const o = map[r.outcome] ?? { cls: "review", icon: "❔", title: "未知結果", sub: `伺服器回傳未預期的 outcome：${String(r.outcome)}` };
+  // fallback 也要帶 Icon：舊版寫成 icon 字串，遇到未預期的 outcome 會 render undefined 元件而整頁崩潰
+  const o = map[r.outcome] ?? { cls: "review", Icon: IcoAlert, title: "未知結果", sub: `伺服器回傳未預期的 outcome：${String(r.outcome)}` };
   return (
     <div className={`outcome ${o.cls}`}>
       <o.Icon className="oc-icon" />

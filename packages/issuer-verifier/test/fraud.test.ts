@@ -55,7 +55,7 @@ describe("fraud /score 客戶端 (M2.1)", () => {
     const failing = (async () => {
       throw new Error("ECONNREFUSED");
     }) as unknown as typeof fetch;
-    const r = await scoreTransaction({}, { baseUrl: "http://x", fetchImpl: failing });
+    const r = await scoreTransaction({}, { baseUrl: "http://x", timeoutMs: 300, fetchImpl: failing });
     expect(r.decision).toBe("review");
     expect(r.reasons).toContain("FRAUD_SERVICE_UNAVAILABLE");
   });

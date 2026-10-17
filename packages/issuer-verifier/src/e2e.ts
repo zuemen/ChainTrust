@@ -7,7 +7,7 @@
  *
  * 預設用 InMemoryChainGateway（離線可跑）。設 CHAIN_MODE=ethers 可接已部署合約。
  */
-import { createVeramoAgent, createIssuerDid, createHolderDid } from "./agent.js";
+import { createVeramoAgent, createIssuerDid, createHolderDid, resolveIssuerDid } from "./agent.js";
 import {
   InMemoryChainGateway,
   EthersChainGateway,
@@ -63,7 +63,9 @@ async function main() {
   const publicCa = new MockPublicCaAdapter();
 
   // 1) DID + 信任根背書
-  const issuer = await createIssuerDid(agent);
+  // ethers 模式下發證者金鑰＝送撤銷交易的金鑰（預設沿用 CHAIN_PRIVATE_KEY），
+  // 否則撤銷會寫進別人的命名空間、驗證端永遠查不到（見 agent.ts::resolveIssuerDid）。
+  const issuer = await resolveIssuerDid(agent, "issuer", config.issuerPrivateKey);
   const holder = await createHolderDid(agent);
   const issuerAddr = issuerAddressFromIdentifier(issuer);
   line(`\n[1] Issuer DID = ${issuer.did}`);

@@ -13,12 +13,18 @@ import type { Express } from "express";
 
 const ORIGINAL_API_KEY = process.env.API_KEY;
 const TEST_KEY = "test-api-key-abc123";
+// 固定的測試發證者金鑰（僅測試用、無任何價值）——驗證「設定後 DID 固定、重啟不換」
+const BANK_KEY = "0x" + "11".repeat(32);
 
 let app: Express;
 
 beforeAll(async () => {
   process.env.API_KEY = TEST_KEY;
   process.env.CHAIN_MODE = "memory";
+  process.env.ISSUER_PRIVATE_KEY = BANK_KEY;
+  // 測試環境沒有 ai-service；縮短冷啟動重試預算，不然每個走到評分的測試都要等滿 15 秒
+  process.env.AI_TIMEOUT_MS = "300";
+  process.env.AI_WARMUP_TIMEOUT_MS = "0";
   // config 在 import 時就固定，因此必須先設環境變數再動態載入
   const { createApp } = await import("../src/server.js");
   ({ app } = await createApp());
@@ -27,6 +33,9 @@ beforeAll(async () => {
 afterAll(() => {
   if (ORIGINAL_API_KEY === undefined) delete process.env.API_KEY;
   else process.env.API_KEY = ORIGINAL_API_KEY;
+  delete process.env.ISSUER_PRIVATE_KEY;
+  delete process.env.AI_TIMEOUT_MS;
+  delete process.env.AI_WARMUP_TIMEOUT_MS;
 });
 
 describe("API key 守門", () => {
@@ -181,7 +190,7 @@ describe("端到端：真實憑證走完整 HTTP 流程", () => {
 
     const verified = await request(app)
       .post("/sdjwt/verify")
-      .send({ presentation, nonce: challenge.nonce, tx: { amount: 1280, type: "PAYMENT" } });
+      .send({ presentation, nonce: challenge.nonce, scenario: "normal" });
 
     expect(verified.body.verify.ok).toBe(true);
     expect(verified.body.verify.checks.keyBinding).toBe(true);
@@ -210,5 +219,124 @@ describe("端到端：真實憑證走完整 HTTP 流程", () => {
       .send({ presentation, nonce: c2.nonce });
     expect(replay.body.verify.ok).toBe(false);
     expect(replay.body.verify.reason).toMatch(/nonce|key binding/);
+  });
+});
+
+/** 簽發一張 KYC → 出示 → 驗證，回傳驗證結果與撤銷鍵（供撤銷測試共用） */
+async function issueAndVerify(kind: "kyc" | "reputation" = "kyc") {
+  const { ensureTestHolder } = await import("./helpers/holder.js");
+  const holder = await ensureTestHolder();
+  const path = kind === "kyc" ? "/sdjwt/issue" : "/sdjwt/issue-reputation";
+  const issued = await request(app).post(path).set("X-API-Key", TEST_KEY).send({ holderDid: holder.did });
+  const payload = JSON.parse(Buffer.from(String(issued.body.vc).split(".")[1], "base64url").toString("utf-8"));
+  const present = async () => {
+    const { body: c } = await request(app).post("/sdjwt/nonce").send({});
+    const reveal = kind === "kyc" ? ["kycLevel"] : ["reputationTier"];
+    const presentation = await holder.present(issued.body.vc, reveal, { aud: c.aud, nonce: c.nonce });
+    return request(app).post("/sdjwt/verify").send({ presentation, nonce: c.nonce, kind });
+  };
+  return { issued, payload, present };
+}
+
+describe("撤銷（修復前 memory 模式 /revoke 一律 500）", () => {
+  it("銀行 A 撤銷自己簽發的 KYC 憑證後，出示驗證失敗", async () => {
+    const { payload, present } = await issueAndVerify("kyc");
+    expect((await present()).body.verify.ok).toBe(true);
+
+    const r = await request(app)
+      .post("/revoke")
+      .set("X-API-Key", TEST_KEY)
+      .send({ revocationKey: payload.credentialStatus.revocationKey });
+    expect(r.status).toBe(200);
+    expect(r.body.revoked).toBe(true);
+
+    const after = await present();
+    expect(after.body.verify.ok).toBe(false);
+    expect(after.body.verify.checks.notRevoked).toBe(false);
+  });
+
+  it("撤銷只對該發證者簽發的憑證生效：用 bank 撤銷中華電信簽的信譽憑證不會成功", async () => {
+    const { payload, present } = await issueAndVerify("reputation");
+    await request(app)
+      .post("/revoke")
+      .set("X-API-Key", TEST_KEY)
+      .send({ revocationKey: payload.credentialStatus.revocationKey, issuer: "bank" });
+    expect((await present()).body.verify.ok).toBe(true);
+
+    const r = await request(app)
+      .post("/revoke")
+      .set("X-API-Key", TEST_KEY)
+      .send({ revocationKey: payload.credentialStatus.revocationKey, issuer: "cht" });
+    expect(r.status).toBe(200);
+    expect((await present()).body.verify.checks.notRevoked).toBe(false);
+  });
+
+  it("issuer 參數不合法回 400", async () => {
+    const r = await request(app)
+      .post("/revoke")
+      .set("X-API-Key", TEST_KEY)
+      .send({ revocationKey: "0x" + "22".repeat(32), issuer: "evil" });
+    expect(r.status).toBe(400);
+  });
+});
+
+describe("發證者", () => {
+  it("繳費信譽憑證由中華電信發證者簽（與 KYC 憑證不同 DID）", async () => {
+    const kyc = await issueAndVerify("kyc");
+    const rep = await issueAndVerify("reputation");
+    expect(rep.payload.iss).not.toBe(kyc.payload.iss);
+    const info = await request(app).get("/info").set("X-API-Key", TEST_KEY);
+    expect(rep.payload.iss).toBe(info.body.chtIssuerDid);
+  });
+
+  it("設定 ISSUER_PRIVATE_KEY 後 DID 固定：重建服務（模擬重啟）仍是同一個發證者", async () => {
+    const { createApp } = await import("../src/server.js");
+    const a = await createApp();
+    const b = await createApp();
+    expect(a.issuer.did).toBe(b.issuer.did);
+    const { didKeyFromSecp256k1PrivateKey } = await import("../src/agent.js");
+    expect(a.issuer.did).toBe(didKeyFromSecp256k1PrivateKey(BANK_KEY));
+  });
+
+  it("重啟後先前簽發的憑證仍可驗證通過（固定 DID 的實際效益）", async () => {
+    const { ensureTestHolder } = await import("./helpers/holder.js");
+    const holder = await ensureTestHolder();
+    const issued = await request(app).post("/sdjwt/issue").set("X-API-Key", TEST_KEY).send({ holderDid: holder.did });
+
+    const { createApp } = await import("../src/server.js");
+    const { app: restarted } = await createApp(); // 全新記憶體狀態，等同重啟
+    const { body: c } = await request(restarted).post("/sdjwt/nonce").send({});
+    const presentation = await holder.present(issued.body.vc, ["kycLevel"], { aud: c.aud, nonce: c.nonce });
+    const r = await request(restarted).post("/sdjwt/verify").send({ presentation, nonce: c.nonce });
+    expect(r.body.verify.ok).toBe(true);
+  });
+});
+
+describe("交易脈絡由驗證方決定（H9）", () => {
+  it("不接受出示者自帶 tx（修復前可把人頭交易改報成正常交易而放行）", async () => {
+    const { body: c } = await request(app).post("/sdjwt/nonce").send({});
+    const r = await request(app)
+      .post("/sdjwt/verify")
+      .send({ presentation: "x~", nonce: c.nonce, tx: { amount: 1, type: "PAYMENT" } });
+    expect(r.status).toBe(400);
+    expect(String(r.body.error)).toContain("scenario");
+  });
+
+  it("不合法的 scenario 回 400", async () => {
+    const r = await request(app).post("/sdjwt/verify").send({ presentation: "x~", scenario: "custom" });
+    expect(r.status).toBe(400);
+  });
+
+  it("回應帶出實際採用的情境；未指定時 KYC 預設 normal", async () => {
+    const { present } = await issueAndVerify("kyc");
+    const r = await present();
+    expect(r.body.scenario).toBe("normal");
+  });
+});
+
+describe("已移除的端點", () => {
+  it("POST /holder 不再存在（伺服器不代管持有者金鑰）", async () => {
+    const r = await request(app).post("/holder").send({});
+    expect(r.status).toBe(404);
   });
 });

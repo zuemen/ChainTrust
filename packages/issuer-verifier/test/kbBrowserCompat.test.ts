@@ -7,7 +7,7 @@
  *
  * 本測試用 ethers.SigningKey 產生位元級相同的簽章與 DID 編碼，證明：
  * 伺服器完全不知道持有者私鑰的前提下，issueKycSdJwt → 錢包式出示 →
- * verifyKycSdJwtPresentation(requireKeyBinding) 全綠。
+ * verifyKycSdJwtPresentation（KB 必驗）全綠。
  */
 import { describe, it, expect, beforeAll } from "vitest";
 import { randomBytes, createHash } from "crypto";
@@ -105,7 +105,7 @@ describe("瀏覽器端持有者金鑰（金鑰自主）× 伺服器 KB 驗證", 
     expect(payload.cnf?.jwk?.crv).toBe("secp256k1");
   });
 
-  it("最小揭露＋本機簽 KB → requireKeyBinding 驗證全綠", async () => {
+  it("最小揭露＋本機簽 KB → KB 必驗驗證全綠", async () => {
     const core = walletPresent(vc, ["kycLevel"]);
     const aud = "chaintrust-verifier";
     const nonce = "test-nonce-001";
@@ -130,7 +130,7 @@ describe("瀏覽器端持有者金鑰（金鑰自主）× 伺服器 KB 驗證", 
     const core = walletPresent(vc, ["kycLevel"]);
     const presentation = walletAttachKb(holderSk, core, "chaintrust-verifier", "nonce-A");
     const r = await verifyKycSdJwtPresentation(chain, presentation, {
-      minKycLevel: 2, requireKeyBinding: true,
+      minKycLevel: 2,
       expectedAud: "chaintrust-verifier", expectedNonce: "nonce-B",
     });
     expect(r.ok).toBe(false);
@@ -142,7 +142,7 @@ describe("瀏覽器端持有者金鑰（金鑰自主）× 伺服器 KB 驗證", 
     const core = walletPresent(vc, ["kycLevel"]);
     const presentation = walletAttachKb(thief, core, "chaintrust-verifier", "nonce-C");
     const r = await verifyKycSdJwtPresentation(chain, presentation, {
-      minKycLevel: 2, requireKeyBinding: true,
+      minKycLevel: 2,
       expectedAud: "chaintrust-verifier", expectedNonce: "nonce-C",
     });
     expect(r.ok).toBe(false);

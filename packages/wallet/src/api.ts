@@ -1,19 +1,10 @@
-/** issuer-verifier API（經 vite proxy /api → :3001）。 */
+/** issuer-verifier API（經同源代理 /api → issuer-verifier；金鑰由代理層注入）。 */
 
-export interface TxContext {
-  amount?: number;
-  type?: "CASH_IN" | "CASH_OUT" | "DEBIT" | "PAYMENT" | "TRANSFER";
-  oldbalanceOrg?: number;
-  newbalanceOrig?: number;
-  mobile_realname_verified?: boolean;
-  tx_count_1h?: number;
-  tx_count_24h?: number;
-  device_changed?: boolean;
-  geo_jump?: boolean;
-  account_age_days?: number;
-  payee_risk?: number;
-  cross_institution_presentations?: number;
-}
+/**
+ * 交易情境 ID。交易內容本身由驗證方伺服器持有（issuer-verifier `src/scenarios.ts`），
+ * 錢包只能選情境、不能自帶數值——被攔截的人不該能自己把交易報成正常（2026-08 稽核 H9）。
+ */
+export type ScenarioId = "normal" | "mule" | "microloan";
 
 export interface TopFactor {
   feature: string;
@@ -31,6 +22,8 @@ export interface RiskAssessment {
   confidence?: number | null;
   confidence_band?: "high" | "medium" | "low" | null;
   top_factors?: TopFactor[];
+  /** 規則保底把分數往上拉（金流紅旗不得被模型分數抹掉） */
+  rule_floor_applied?: boolean;
 }
 
 /** AI 模型評估報告（GET /metrics）。 */
@@ -78,6 +71,8 @@ export interface VerifyResponse {
   verify: SdJwtVerifyResult;
   risk?: RiskAssessment;
   outcome: "approve" | "review" | "reject";
+  /** 驗證方實際採用的交易情境 */
+  scenario?: ScenarioId;
 }
 
 const BASE = "/api";
@@ -185,12 +180,12 @@ export type PresentationKind = "kyc" | "reputation";
 
 export async function verifyPresentation(
   presentation: string,
-  tx: TxContext,
+  scenario: ScenarioId,
   kind: PresentationKind = "kyc",
   opts?: { nonce?: string }
 ): Promise<VerifyResponse> {
-  // 驗證政策（是否強制 key binding、aud）一律由伺服器決定，前端只回傳挑戰用的 nonce。
-  return postJson("/sdjwt/verify", { presentation, tx, kind, nonce: opts?.nonce });
+  // 驗證政策（KB 必驗、aud）與交易脈絡一律由伺服器決定；前端只回傳挑戰 nonce 與情境 ID。
+  return postJson("/sdjwt/verify", { presentation, scenario, kind, nonce: opts?.nonce });
 }
 
 export async function getMetrics(): Promise<MetricsResponse> {

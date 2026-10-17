@@ -59,7 +59,7 @@ const parsed = parseSdJwt(vc);
 const presentation = buildPresentationWithKeyBinding(parsed, ["kycLevel"], { aud, nonce }, getKeyBindingSigner());
 const res = await post("/sdjwt/verify", {
   presentation,
-  tx: { type: "PAYMENT", amount: 1280, mobile_realname_verified: true, account_age_days: 900 },
+  scenario: "normal", // 交易脈絡由驗證方伺服器決定（H9），只能選情境
   nonce,
 });
 assert(res.verify.ok === true, `驗證通過：${JSON.stringify(res.verify.checks)}`);
@@ -68,7 +68,7 @@ assert(res.verify.disclosed.length === 1 && res.verify.disclosed[0] === "kycLeve
 
 // 4) nonce 一次性：重放同一出示應被拒
 const replay = await post("/sdjwt/verify", {
-  presentation, tx: {}, nonce,
+  presentation, scenario: "normal", nonce,
 });
 assert(replay.verify.ok === false && String(replay.verify.reason).includes("nonce"), "重放同一 nonce 被拒");
 

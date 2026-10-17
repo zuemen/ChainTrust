@@ -5,10 +5,12 @@ import * as path from "path";
 /**
  * Amoy 部署後煙霧測試（amoy-deploy-checklist.md 步驟 7）：
  *  1) owner 將 deployer 自身設為受信任 issuer
- *     —— RevocationRegistry.revoke 要求 msg.sender 受信任；
- *        issuer-verifier 的 EthersChainGateway 以 CHAIN_PRIVATE_KEY（= deployer）簽撤銷交易，
- *        故 deployer 位址必須先受信任，e2e/server 的撤銷才走得通。
- *  2) （可選）TRUST_ISSUER=0x... 額外背書一個 issuer 位址（例如 server /health 回傳的 issuerAddr）。
+ *     —— issuer-verifier 在 ethers 模式下，若未另設 ISSUER_PRIVATE_KEY，就以 CHAIN_PRIVATE_KEY
+ *        （= deployer）作為「銀行 A」發證者金鑰：憑證由它簽、撤銷交易也由它送。
+ *        RevocationRegistry 以 msg.sender 為撤銷命名空間、revoke 要求 msg.sender 受信任，
+ *        因此 deployer 必須先受信任，簽發→撤銷→驗證才對得上同一個位址。
+ *  2) （可選）TRUST_ISSUER=0x... 額外背書一個 issuer 位址（例如另設的 CHT_ISSUER_PRIVATE_KEY
+ *     對應位址，可由 server 的 /info 查到 chtIssuerAddr）。
  *  3) revoke → isRevoked=true → unrevoke → isRevoked=false，各步印 PolygonScan 交易連結。
  * 用法：pnpm --filter @chaintrust/contracts smoke:amoy
  */

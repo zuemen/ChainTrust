@@ -18,8 +18,8 @@ const AI = process.env.AI_URL ?? "http://localhost:8000";
 // 未設 API_KEY 時一律回 503，設了就必須帶對 X-API-Key。
 const API_KEY = process.env.API_KEY ?? "";
 
-const NORMAL_TX = { type: "PAYMENT", amount: 1280, oldbalanceOrg: 52000, newbalanceOrig: 50720, mobile_realname_verified: true, account_age_days: 900, payee_risk: 0.05, tx_count_1h: 1, tx_count_24h: 4 };
-const MULE_TX = { type: "TRANSFER", amount: 920000, oldbalanceOrg: 1000000, newbalanceOrig: 0, mobile_realname_verified: false, tx_count_1h: 8, tx_count_24h: 41, device_changed: true, geo_jump: true, account_age_days: 2, payee_risk: 0.92, cross_institution_presentations: 13 };
+// 交易脈絡由驗證方伺服器持有（packages/issuer-verifier/src/scenarios.ts），出示方只能選情境 ID，
+// 不能自帶交易數值（2026-08 稽核 H9：被攔截的人不該能自己把人頭交易報成正常交易）。
 
 let failed = false;
 const ok = (m) => console.log(`  ✔ ${m}`);
@@ -167,7 +167,7 @@ async function main() {
   console.log("\n[步驟5a] 正常交易 → 應放行且驗證方看不到 PII");
   const ch1 = await freshChallenge();
   const presA = buildPresentationWithKb(holder, parsed, ["kycLevel"], ch1);
-  const a = await jpost(`${IV}/sdjwt/verify`, { presentation: presA, tx: NORMAL_TX, nonce: ch1.nonce });
+  const a = await jpost(`${IV}/sdjwt/verify`, { presentation: presA, scenario: "normal", nonce: ch1.nonce });
   a.verify?.checks?.keyBinding === true ? ok("持有者金鑰綁定通過（KB）") : bad(`keyBinding=${a.verify?.checks?.keyBinding}（reason: ${a.verify?.reason}）`);
   a.outcome === "approve" ? ok(`outcome=approve（risk=${a.risk?.risk} ${a.risk?.decision}）`) : bad(`outcome=${a.outcome}（期望 approve；reason: ${a.verify?.reason}）`);
   const seen = Object.keys(a.verify?.payload ?? {});
@@ -177,12 +177,12 @@ async function main() {
   console.log("\n[步驟5b] 高風險人頭交易（同一張憑證）→ 應攔截");
   const ch2 = await freshChallenge();
   const presB = buildPresentationWithKb(holder, parsed, ["kycLevel"], ch2);
-  const b = await jpost(`${IV}/sdjwt/verify`, { presentation: presB, tx: MULE_TX, nonce: ch2.nonce });
+  const b = await jpost(`${IV}/sdjwt/verify`, { presentation: presB, scenario: "mule", nonce: ch2.nonce });
   (b.outcome === "reject" && b.risk?.decision === "block") ? ok(`outcome=reject / block（risk=${b.risk?.risk}）`) : bad(`outcome=${b.outcome} decision=${b.risk?.decision}（期望 reject/block）`);
   b.risk?.reasons?.includes("MULE_PATTERN") ? ok(`風險原因含 MULE_PATTERN（${b.risk.reasons.join(", ")}）`) : bad(`風險原因：${b.risk?.reasons?.join(",")}`);
 
   console.log("\n[防重放] 重放先前用過的出示 → 應被擋");
-  const replay = await jpost(`${IV}/sdjwt/verify`, { presentation: presA, tx: NORMAL_TX, nonce: ch1.nonce });
+  const replay = await jpost(`${IV}/sdjwt/verify`, { presentation: presA, scenario: "normal", nonce: ch1.nonce });
   replay.outcome === "reject" ? ok(`重放被擋（reason: ${replay.verify?.reason}）`) : bad(`重放竟通過：outcome=${replay.outcome}`);
 
   finish();

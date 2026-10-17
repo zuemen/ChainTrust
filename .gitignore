@@ -73,3 +73,7 @@ Thumbs.db
 .claude-flow/
 .mcp.json
 CLAUDE.md.ruflo.bak
+
+# 本地鏈演練的部署輸出（hardhat node），只有 amoy.json 這類真網路的部署檔需要入庫
+packages/contracts/deployments/localhost.json
+packages/contracts/deployments/hardhat.json

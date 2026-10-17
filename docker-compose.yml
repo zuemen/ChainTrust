@@ -40,6 +40,9 @@ services:
       CHAIN_MODE: ${CHAIN_MODE:-memory}
       AMOY_RPC_URL: ${AMOY_RPC_URL:-https://rpc-amoy.polygon.technology}
       CHAIN_PRIVATE_KEY: ${CHAIN_PRIVATE_KEY:-}
+      # 發證者金鑰：固定 DID（重啟憑證不失效），ethers 模式撤銷由它送出
+      ISSUER_PRIVATE_KEY: ${ISSUER_PRIVATE_KEY:-}
+      CHT_ISSUER_PRIVATE_KEY: ${CHT_ISSUER_PRIVATE_KEY:-}
       # mutating 端點（/revoke、/sdjwt/issue、/issue/*）的守門金鑰。
       # 留空 = dev 模式不設防；正式 demo 請在 .env 設一個長隨機字串。
       API_KEY: ${API_KEY:-}

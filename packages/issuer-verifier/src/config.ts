@@ -20,15 +20,28 @@ function parseChainMode(raw: string | undefined): ChainMode {
   process.exit(1);
 }
 
+const chainMode = parseChainMode(process.env.CHAIN_MODE);
+
 /** 執行環境設定。私鑰類一律從 .env 讀，勿入庫。 */
 export const config = {
   port: Number(process.env.PORT ?? 3001),
   nodeEnv: process.env.NODE_ENV ?? "development",
   // 鏈：'memory'（離線 e2e/dev）或 'ethers'（接已部署合約）
-  chainMode: parseChainMode(process.env.CHAIN_MODE),
+  chainMode,
   amoyRpcUrl: process.env.AMOY_RPC_URL ?? "https://rpc-amoy.polygon.technology",
-  // 接真合約時用：issuer 操作（撤銷）的簽署私鑰；缺則為唯讀
+  // 接真合約時用：信任根 owner（setTrustedIssuer）的簽署私鑰；缺則為唯讀
   chainPrivateKey: process.env.CHAIN_PRIVATE_KEY,
+  // 發證者（銀行 A）的簽章金鑰。設定後 issuer DID 固定、服務重啟憑證不失效；
+  // ethers 模式下撤銷交易也由這把金鑰送出（RevocationRegistry 以送交易者位址為撤銷命名空間，
+  // 必須與憑證簽發者是同一把）。ethers 模式未設時沿用 CHAIN_PRIVATE_KEY——與
+  // smoke:amoy「deployer 自我背書」對齊，一把測試錢包就能跑通簽發→撤銷→驗證。
+  issuerPrivateKey:
+    process.env.ISSUER_PRIVATE_KEY ||
+    (chainMode === "ethers" ? process.env.CHAIN_PRIVATE_KEY : undefined) ||
+    undefined,
+  // 第二發證者（中華電信門號電子卡／繳費信譽）的簽章金鑰，選填；未設則每次啟動隨機產生，
+  // 且 ethers 模式下無法上鏈撤銷它簽發的憑證。
+  chtIssuerPrivateKey: process.env.CHT_ISSUER_PRIVATE_KEY || undefined,
   // AI 反詐服務（M2 用）
   aiServiceUrl: process.env.AI_SERVICE_URL ?? "http://localhost:8000",
   // 呼叫 AI 服務的逾時。分成兩個是因為兩條路徑的取捨不同：

@@ -1,4 +1,4 @@
-import { JsonRpcProvider, Wallet, Contract, getAddress } from "ethers";
+import { JsonRpcProvider, Wallet, NonceManager, Contract, getAddress } from "ethers";
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
@@ -23,7 +23,11 @@ export interface ChainGateway {
   isRevoked(issuerAddress: string, credentialHash: string): Promise<boolean>;
   /** 信任根管理（dev/e2e 或具 owner 權限時可用） */
   setTrustedIssuer(issuerAddress: string, trusted: boolean): Promise<void>;
-  /** 由 issuer 撤銷 VC（dev/e2e 或具私鑰時可用） */
+  /**
+   * 由 issuer 撤銷 VC（dev/e2e 或具私鑰時可用）。
+   * ⚠ 撤銷寫入的是「送交易者（ethers：signer；記憶體：setRevokeAs）」的命名空間，
+   *   該位址必須就是憑證的簽發者，否則驗證端查不到這筆撤銷。
+   */
   revoke(credentialHash: string): Promise<void>;
   unrevoke(credentialHash: string): Promise<void>;
 }
@@ -103,7 +107,7 @@ export interface EthersGatewayOptions {
  */
 export class EthersChainGateway implements ChainGateway {
   private provider: JsonRpcProvider;
-  private signer?: Wallet;
+  private signer?: NonceManager;
   private issuerRegistry: Contract;
   private revocationRegistry: Contract;
 
@@ -115,8 +119,11 @@ export class EthersChainGateway implements ChainGateway {
     this.provider = new JsonRpcProvider(opts.rpcUrl);
     this.expectedChainId = opts.expectedChainId;
     this.txTimeoutMs = opts.txTimeoutMs ?? 120_000;
+    // NonceManager：連續送兩筆交易時（例如啟動時背書兩個發證者、或背書後立刻撤銷），
+    // provider 回傳的 pending nonce 可能還沒跟上，第二筆會撞 "nonce too low"。
+    // 由本地遞增 nonce 才能穩定連發（在本地鏈 e2e 實際踩到）。
     const runner = opts.privateKey
-      ? (this.signer = new Wallet(opts.privateKey, this.provider))
+      ? (this.signer = new NonceManager(new Wallet(opts.privateKey, this.provider)))
       : this.provider;
     this.issuerRegistry = new Contract(opts.issuerRegistry, ISSUER_REGISTRY_ABI, runner);
     this.revocationRegistry = new Contract(
