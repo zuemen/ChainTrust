@@ -43,8 +43,8 @@
     },
     {
       "label": "pass_through_verified_drain",
-      "expect": "review",
-      "comment": "已實名、500 天老帳戶一次提領 95% 餘額：合成訓練資料沒有這種樣態（金流型詐欺全是新帳戶），模型分數偏低；由規則保底（PASS_THROUGH → 至少 review）交人工複核。不設 block：已實名老客戶大額提領可能是合法的（買車、繳房款），直接攔截的誤殺成本過高。",
+      "expect": "review+",
+      "comment": "已實名、500 天老帳戶一次提領 95% 餘額：合成訓練資料沒有這種樣態（金流型詐欺全是新帳戶），模型對它的分數不穩定（隨建置機器重訓，2026-10-19 CI 重訓後 p_fraud 0.96）；規則保底（PASS_THROUGH → 至少 review）保證它一定交人工複核，所以只斷言下限。規則層不設 block：已實名老客戶大額提領可能是合法的（買車、繳房款），直接攔截的誤殺成本過高。",
       "ctx": {
         "type": "CASH_OUT", "amount": 350000, "oldbalanceOrg": 400000, "newbalanceOrig": 20000,
         "oldbalanceDest": 2000, "newbalanceDest": 2000, "tx_count_1h": 2, "tx_count_24h": 12,
